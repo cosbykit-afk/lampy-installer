@@ -121,7 +121,7 @@ if ($LASTEXITCODE -ne 0) { throw "wsl-envfix.py failed" }
 
 Write-Step "4/5 Registering boot startup (Task Scheduler)"
 $taskName = "Lampy"
-$action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d $DistroName -u root supervisord -c /etc/supervisor/conf.d/lampy.conf"
+$action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d $DistroName -u root /usr/local/bin/lampy-boot.sh"
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
