@@ -29,17 +29,19 @@ no Docker required.
      GitHub Releases) — this takes a while on first run
    - Enable WSL2 if it isn't already (may ask you to reboot once, then re-run)
    - Import the Lampy system as a WSL distro
-   - Start all 7 services
+   - Fetch the latest R Theory and Bible websites from GitHub
+   - Start all 8 services
    - Register Lampy to start automatically when Windows boots
 5. When it finishes, open your browser:
    - Forum: http://localhost/app/
    - R Theory site: http://localhost/r-theory/
+   - Bible site: http://localhost/bible/
    - code-server: http://localhost:8080/
 
 That's it. No Docker, no command line beyond the one install command, no
 configuration.
 
-> **Note:** If you already have the tarball locally (e.g. `lampy-wsl-slim.tar`
+> **Note:** If you already have the tarball locally (e.g. `lampy-public.tar`
 > on disk), pass it directly to skip the download:
 > ```powershell
 > powershell -ExecutionPolicy Bypass -File .\install.ps1 -TarballPath "C:\path\to\lampy-wsl-slim.tar"
@@ -159,7 +161,7 @@ See [BUILD.md](BUILD.md) for the full pipeline
 
 ## Version
 
-- Installer: 1.0.0-slim
+- Installer: 1.0.0
 - Base image: `kitcosby/lampy-single:windows-1.0.0`
   (digest `sha256:69a301fb52d664e31105972d88b1d2431d923e2bb8474e2c531e08a59e004455`)
 - System image: `lampy-wsl-slim.tar` (10.6 GB, slimmed 2026-09-27 —
