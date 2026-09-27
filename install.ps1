@@ -160,7 +160,16 @@ if ($LASTEXITCODE -ne 0) { throw "wsl-envfix.py failed" }
 
 # Boot supervisord on every WSL distro start
 
-Write-Step "4/5 Registering boot startup (Task Scheduler)"
+Write-Step "4/6 Fetching latest R Theory and Bible websites from GitHub"
+# R Theory website (static) -> /var/www/html/r-theory/
+wsl -d $DistroName -u root bash -c "rm -rf /var/www/html/r-theory && mkdir -p /var/www/html && cd /var/www/html && curl -sL https://github.com/cosbykit-afk/r-theory-rewrite/archive/refs/heads/main.tar.gz | tar xz && mv r-theory-rewrite-main r-theory && chown -R www-data:www-data r-theory"
+if ($LASTEXITCODE -ne 0) { Write-Warning "R Theory download failed, using baked-in version" }
+
+# Bible website (Flask + SQLite) -> /opt/bible/
+wsl -d $DistroName -u root bash -c "rm -rf /opt/bible/website && mkdir -p /opt/bible && cd /opt/bible && curl -sL https://github.com/cosbykit-afk/bible-project/archive/refs/heads/main.tar.gz | tar xz && mv bible-project-main/website website && rm -rf bible-project-main"
+if ($LASTEXITCODE -ne 0) { Write-Warning "Bible website download failed, using baked-in version" }
+
+Write-Step "5/6 Registering boot startup (Task Scheduler)"
 $taskName = "Lampy"
 $action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d $DistroName -u root /usr/local/bin/lampy-boot.sh"
 $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -171,7 +180,7 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings | Out-Null
 Write-Host "Scheduled task '$taskName' registered."
 
-Write-Step "5/5 Starting Lampy and verifying"
+Write-Step "6/6 Starting Lampy and verifying"
 Start-ScheduledTask -TaskName $taskName
 Write-Host "Waiting for services to boot..."
 Start-Sleep -Seconds 60
