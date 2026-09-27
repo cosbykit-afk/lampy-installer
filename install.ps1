@@ -46,78 +46,94 @@ if (-not $tarball) {
     $dlDir = Join-Path $InstallDir "download"
     New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
     $tarball = Join-Path $dlDir "lampy-public.tar"
-    if (-not (Test-Path $tarball)) {
-        # Discover chunk count from the release metadata
-        $apiUrl = "https://api.github.com/repos/cosbykit-afk/lampy-installer/releases/tags/$ReleaseTag"
-        $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
-        $chunks = $release.assets | Where-Object { $_.name -like "lampy-public.tar.part-*" } | Sort-Object name
-        if (-not $chunks) { throw "No tarball chunks found in release $ReleaseTag. The release assets may still be uploading. Check https://github.com/cosbykit-afk/lampy-installer/releases/tag/$ReleaseTag" }
-        Write-Host "Found $($chunks.Count) chunks."
-        # Download and parse the sha256 checksum file for verification
-        $shaAsset = $release.assets | Where-Object { $_.name -eq "lampy-public.tar.sha256" }
-        $expectedHashes = @{}
-        if ($shaAsset) {
-            $shaDest = Join-Path $dlDir "lampy-public.tar.sha256"
-            if (-not (Test-Path $shaDest)) {
-                Write-Host "Downloading checksum file..."
-                Invoke-WebRequest -Uri $shaAsset.browser_download_url -OutFile $shaDest -UseBasicParsing
-            }
-            Get-Content $shaDest | ForEach-Object {
-                if ($_ -match '^([a-fA-F0-9]{64})\s+(.+)$') {
-                    $expectedHashes[$matches[2].Trim()] = $matches[1].ToLower()
-                }
-            }
-            Write-Host "Loaded $($expectedHashes.Count) expected checksums."
+    # Check if we have a complete tarball already (must be >10GB)
+    $tarballOk = $false
+    if (Test-Path $tarball) {
+        $tarballSize = (Get-Item $tarball).Length
+        if ($tarballSize -gt 10GB) {
+            Write-Host "Tarball already present ($([math]::Round($tarballSize/1GB,1)) GB), skipping download."
+            $tarballOk = $true
         } else {
-            Write-Host "WARNING: No checksum file in release, skipping verification."
+            Write-Host "Existing tarball incomplete ($([math]::Round($tarballSize/1MB,0)) MB), will re-download chunks."
+            Remove-Item $tarball -Force
         }
+    }
+    if (-not $tarballOk) {
+        $apiUrl = "https://api.github.com/repos/cosbykit-afk/lampy-installer/releases/tags/$ReleaseTag"
+        try {
+            $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
+        } catch {
+            throw "Could not find Lampy release $ReleaseTag. Check https://github.com/cosbykit-afk/lampy-installer/releases"
+        }
+        $chunks = $release.assets | Where-Object { $_.name -like "lampy-public.tar.part-*" } | Sort-Object name
+        if (-not $chunks -or $chunks.Count -eq 0) {
+            throw "No tarball chunks in release $ReleaseTag. Assets may still be uploading: https://github.com/cosbykit-afk/lampy-installer/releases/tag/$ReleaseTag"
+        }
+        Write-Host "Release has $($chunks.Count) chunks. Checking each one..."
+        $shaAsset = $release.assets | Where-Object { $_.name -eq "lampy-public.tar.sha256" }
+        if (-not $shaAsset) { throw "No checksum file in release. Cannot verify chunks." }
+        $shaDest = Join-Path $dlDir "lampy-public.tar.sha256"
+        Write-Host "Downloading checksum file..."
+        Invoke-WebRequest -Uri $shaAsset.browser_download_url -OutFile $shaDest -UseBasicParsing
+        $expectedHashes = @{}
+        Get-Content $shaDest | ForEach-Object {
+            if ($_ -match '^([a-fA-F0-9]{64})\s+(.+)$') {
+                $expectedHashes[$matches[2].Trim()] = $matches[1].ToLower()
+            }
+        }
+        # Verify/download EACH chunk - ALL must pass before assembly
+        $verifiedCount = 0
         $i = 0
         foreach ($chunk in $chunks) {
             $i++
             $dest = Join-Path $dlDir $chunk.name
-            $needDownload = $true
+            $expected = $expectedHashes[$chunk.name]
+            if (-not $expected) { throw "No checksum for $($chunk.name). Aborting." }
+            $ok = $false
             if (Test-Path $dest) {
-                $expected = $expectedHashes[$chunk.name]
-                if ($expected) {
-                    Write-Host "Verifying chunk $i/$($chunks.Count): $($chunk.name)..."
+                $fs = (Get-Item $dest).Length
+                if ($fs -eq $chunk.size) {
                     $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
                     if ($actual -eq $expected) {
-                        Write-Host "Chunk $i/$($chunks.Count) verified OK, skipping download."
-                        $needDownload = $false
-                    } else {
-                        Write-Host "Chunk $i/$($chunks.Count) FAILED verification (corrupt or incomplete), re-downloading."
+                        Write-Host "[$i/$($chunks.Count)] $($chunk.name): OK ($([math]::Round($fs/1MB,0)) MB)"
+                        $ok = $true
                     }
-                } else {
-                    Write-Host "Chunk $i/$($chunks.Count) already present (no checksum to verify), skipping."
-                    $needDownload = $false
                 }
+                if (-not $ok) { Write-Host "[$i/$($chunks.Count)] $($chunk.name): invalid, downloading..." }
+            } else {
+                Write-Host "[$i/$($chunks.Count)] $($chunk.name): missing, downloading..."
             }
-            if ($needDownload) {
-                Write-Host "Downloading chunk $i/$($chunks.Count): $($chunk.name)..."
+            if (-not $ok) {
                 Invoke-WebRequest -Uri $chunk.browser_download_url -OutFile $dest -UseBasicParsing
-                $expected = $expectedHashes[$chunk.name]
-                if ($expected) {
-                    $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
-                    if ($actual -ne $expected) {
-                        throw "Checksum mismatch for $($chunk.name) after download. Expected $expected, got $actual."
-                    }
-                    Write-Host "Chunk $i/$($chunks.Count) downloaded and verified."
+                $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+                if ($actual -ne $expected) {
+                    Remove-Item $dest -Force -ErrorAction SilentlyContinue
+                    throw "Checksum failed for $($chunk.name) after download. Re-run installer."
                 }
+                Write-Host "[$i/$($chunks.Count)] $($chunk.name): downloaded and verified."
+                $ok = $true
             }
+            if ($ok) { $verifiedCount++ }
         }
-        Write-Host "Reassembling tarball..."
+        if ($verifiedCount -ne $chunks.Count) {
+            throw "Only $verifiedCount of $($chunks.Count) chunks verified. Cannot proceed."
+        }
+        Write-Host "All $($chunks.Count) chunks verified. Assembling tarball..."
         $outStream = [System.IO.File]::Create($tarball)
         try {
             foreach ($chunk in $chunks) {
-                $inStream = [System.IO.File]::OpenRead((Join-Path $dlDir $chunk.name))
+                $cp = Join-Path $dlDir $chunk.name
+                $inStream = [System.IO.File]::OpenRead($cp)
                 try { $inStream.CopyTo($outStream) } finally { $inStream.Close() }
             }
         } finally { $outStream.Close() }
-        Write-Host "Tarball reassembled: $tarball"
-    } else {
-        Write-Host "Tarball already downloaded: $tarball"
+        $finalSize = (Get-Item $tarball).Length
+        if ($finalSize -lt 10GB) {
+            Remove-Item $tarball -Force
+            throw "Assembled tarball too small. Deleted. Re-run installer."
+        }
+        Write-Host "Tarball ready: $([math]::Round($finalSize/1GB,1)) GB"
     }
-}
 if (-not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
 
 Write-Step "1/6 Ensuring WSL2 is available"
