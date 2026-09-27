@@ -112,36 +112,12 @@ Write-Step "3/5 Configuring services inside WSL"
 # is Docker-specific. Apply WSL adaptations:
 wsl -d $DistroName -u root bash -c "mkdir -p /var/run/supervisor /var/log/supervisor /var/run/postgresql; chown postgres:postgres /var/run/postgresql; chmod 2775 /var/run/postgresql; ln -sf /usr/lib/postgresql/16/bin/postgres /usr/local/bin/postgres; ln -sf /usr/lib/postgresql/16/bin/pg_ctl /usr/local/bin/pg_ctl; ln -sf /usr/lib/postgresql/16/bin/initdb /usr/local/bin/initdb"
 
-# Append supervisor RPC sections (needed for supervisorctl) if missing
-$hasRpc = wsl -d $DistroName -u root grep -c "unix_http_server" /etc/supervisor/conf.d/lampy.conf
-if ($hasRpc -eq "0") {
-    $rpcPy = Join-Path $env:TEMP "lampy-rpc.py"
-    Set-Content -Path $rpcPy -Value '[unix_http_server]`r`nfile=/var/run/supervisor/supervisor.sock`r`n`r`n[supervisorctl]`r`nserverurl=unix:///var/run/supervisor/supervisor.sock`r`n`r`n[rpcinterface:supervisor]`r`nsupervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface`r`n'
-    $wslRpcPy = "/mnt/c" + ($rpcPy -replace "^C:", "" -replace "\\", "/")
-    wsl -d $DistroName -u root bash -c "cat '$wslRpcPy' >> /etc/supervisor/conf.d/lampy.conf"
-    Remove-Item $rpcPy -ErrorAction SilentlyContinue
-}
-
 # Fix postgres program environment: needs both PATH and PGDATA for WSL
-$envPy = Join-Path $env:TEMP "lampy-envfix.py"
-    $envPyLines = @(
-        'import re',
-        'p = "/etc/supervisor/conf.d/lampy.conf"',
-        'c = open(p).read()',
-        'fixed = "environment=PATH=\"/usr/lib/postgresql/16/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\",PGDATA=\"/home/postgres/pgdata/data\""',
-        'c = re.sub(r"\[program:postgres\].*?(?=\n\[)", lambda m: re.sub(r"^environment=.*$", fixed, m.group(0), flags=re.M), c, flags=re.S)',
-        'c = re.sub(r"\[program:pgai-worker\].*?(?=\n\[)", lambda m: re.sub(r"^command=", "environment=POSTGRES_PASSWORD=password\ncommand=", m.group(0), flags=re.M), c, flags=re.S)',
-        'open(p,"w").write(c)',
-        'print("wsl config patched")'
-    )
-    $envPyContent = $envPyLines -join "`n"
-    Set-Content -Path $envPy -Value $envPyContent
-    $wslEnvPy = "/mnt/c" + ($envPy -replace "^C:", "" -replace "\\", "/")
-    wsl -d $DistroName -u root python3 $wslEnvPy
-    Remove-Item $envPy -ErrorAction SilentlyContinue
+# (wsl-envfix.py ships alongside this script; piped to python3 via stdin)
+Get-Content -Path (Join-Path $PSScriptRoot "wsl-envfix.py") -Raw | wsl -d $DistroName -u root python3
+if ($LASTEXITCODE -ne 0) { throw "wsl-envfix.py failed" }
 
 # Boot supervisord on every WSL distro start
-wsl -d $DistroName -u root bash -c "printf '[boot]\ncommand = supervisord -c /etc/supervisor/conf.d/lampy.conf\n' > /etc/wsl.conf; echo 'wsl.conf written'"
 
 Write-Step "4/5 Registering boot startup (Task Scheduler)"
 $taskName = "Lampy"
