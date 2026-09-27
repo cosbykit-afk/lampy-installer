@@ -33,21 +33,35 @@ if (-not $admin) { throw "Lampy installer must run as Administrator." }
 # Locate the tarball: explicit path, local file, or download from GitHub Releases
 $tarball = $TarballPath
 Write-Step "1/7 Ensuring WSL2 is available"
-$wslOk = $false
-try {
-    $wslList = wsl --list --verbose 2>&1
-    $wslOk = ($LASTEXITCODE -eq 0)
-} catch {
-    $wslOk = $false
-}
-if (-not $wslOk) {
-    Write-Host "Enabling WSL..."
+# Check 1: is wsl.exe on PATH at all?
+$wslCmd = Get-Command wsl.exe -ErrorAction SilentlyContinue
+if (-not $wslCmd) {
+    Write-Host "WSL not found. Enabling Windows features..."
     dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart | Out-Null
     dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null
     Write-Host "WSL enabled. A reboot is required, then re-run the installer."
     exit 2
 }
-wsl --set-default-version 2 | Out-Null
+# Check 2: does wsl.exe actually respond?
+$wslWorks = $false
+try {
+    $null = & wsl.exe --status 2>&1
+    $wslWorks = ($LASTEXITCODE -eq 0)
+} catch { $wslWorks = $false }
+if (-not $wslWorks) {
+    try {
+        $null = & wsl.exe --list --quiet 2>&1
+        $wslWorks = ($LASTEXITCODE -eq 0)
+    } catch { $wslWorks = $false }
+}
+if (-not $wslWorks) {
+    Write-Host "WSL is present but not responding. Attempting repair..."
+    dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null
+    Write-Host "Repair attempted. Reboot if needed, then re-run the installer."
+    exit 2
+}
+Write-Host "WSL is installed and working."
+& wsl.exe --set-default-version 2 | Out-Null
 
 
 if (-not $tarball) {
