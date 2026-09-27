@@ -12,7 +12,9 @@
 #>
 param(
     [string]$InstallDir = "C:\Lampy",
-    [string]$DistroName = "lampy"
+    [string]$DistroName = "lampy",
+    [string]$TarballPath = "",
+    [string]$ReleaseTag = "v1.0.0-slim"
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,8 +27,54 @@ $admin = ([Security.Principal.WindowsPrincipal] `
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) { throw "Lampy installer must run as Administrator." }
 
-$tarball = Join-Path $PSScriptRoot "lampy-wsl.tar"
-if (-not (Test-Path $tarball)) { throw "Missing lampy-wsl.tar next to install.ps1" }
+# Locate the tarball: explicit path, local file, or download from GitHub Releases
+$tarball = $TarballPath
+if (-not $tarball) {
+    $localTar = Join-Path $PSScriptRoot "lampy-wsl-slim.tar"
+    if (Test-Path $localTar) {
+        $tarball = $localTar
+        Write-Host "Using local tarball: $tarball"
+    }
+}
+if (-not $tarball) {
+    # Download chunked tarball from GitHub Releases and reassemble
+    Write-Step "Downloading Lampy system image (10.6 GB in 2 GB chunks)"
+    $releaseUrl = "https://github.com/cosbykit-afk/lampy-installer/releases/download/$ReleaseTag"
+    $dlDir = Join-Path $InstallDir "download"
+    New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
+    $tarball = Join-Path $dlDir "lampy-wsl-slim.tar"
+    if (-not (Test-Path $tarball)) {
+        # Discover chunk count from the release metadata
+        $apiUrl = "https://api.github.com/repos/cosbykit-afk/lampy-installer/releases/tags/$ReleaseTag"
+        $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
+        $chunks = $release.assets | Where-Object { $_.name -like "lampy-wsl-slim.tar.part*" } | Sort-Object name
+        if (-not $chunks) { throw "No tarball chunks found in release $ReleaseTag" }
+        Write-Host "Found $($chunks.Count) chunks."
+        $i = 0
+        foreach ($chunk in $chunks) {
+            $i++
+            $dest = Join-Path $dlDir $chunk.name
+            if (-not (Test-Path $dest)) {
+                Write-Host "Downloading chunk $i/$($chunks.Count): $($chunk.name)..."
+                Invoke-WebRequest -Uri $chunk.browser_download_url -OutFile $dest -UseBasicParsing
+            } else {
+                Write-Host "Chunk $i/$($chunks.Count) already present, skipping."
+            }
+        }
+        Write-Host "Reassembling tarball..."
+        $outStream = [System.IO.File]::Create($tarball)
+        try {
+            foreach ($chunk in $chunks) {
+                $inStream = [System.IO.File]::OpenRead((Join-Path $dlDir $chunk.name))
+                try { $inStream.CopyTo($outStream) } finally { $inStream.Close() }
+            }
+        } finally { $outStream.Close() }
+        Write-Host "Tarball reassembled: $tarball"
+    } else {
+        Write-Host "Tarball already downloaded: $tarball"
+    }
+}
+if (-not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
 
 Write-Step "1/5 Ensuring WSL2 is available"
 $wslList = wsl --list --verbose 2>&1
