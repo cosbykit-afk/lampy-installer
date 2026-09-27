@@ -20,8 +20,10 @@ no Docker required.
 2. Right-click PowerShell → **Run as administrator**.
 3. Run:
    ```powershell
-   .\install.ps1
+   powershell -ExecutionPolicy Bypass -File .\install.ps1
    ```
+   (The `-ExecutionPolicy Bypass` is needed because the script isn't
+   digitally signed — this only affects that one run.)
 4. The installer will:
    - Download the Lampy system image (10.6 GB, in 2 GB chunks from
      GitHub Releases) — this takes a while on first run
@@ -40,7 +42,7 @@ configuration.
 > **Note:** If you already have the tarball locally (e.g. `lampy-wsl-slim.tar`
 > on disk), pass it directly to skip the download:
 > ```powershell
-> .\install.ps1 -TarballPath "C:\path\to\lampy-wsl-slim.tar"
+> powershell -ExecutionPolicy Bypass -File .\install.ps1 -TarballPath "C:\path\to\lampy-wsl-slim.tar"
 > ```
 
 ## What gets installed
