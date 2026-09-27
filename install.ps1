@@ -53,15 +53,56 @@ if (-not $tarball) {
         $chunks = $release.assets | Where-Object { $_.name -like "lampy-public.tar.part-*" } | Sort-Object name
         if (-not $chunks) { throw "No tarball chunks found in release $ReleaseTag. The release assets may still be uploading. Check https://github.com/cosbykit-afk/lampy-installer/releases/tag/$ReleaseTag" }
         Write-Host "Found $($chunks.Count) chunks."
+        # Download and parse the sha256 checksum file for verification
+        $shaAsset = $release.assets | Where-Object { $_.name -eq "lampy-public.tar.sha256" }
+        $expectedHashes = @{}
+        if ($shaAsset) {
+            $shaDest = Join-Path $dlDir "lampy-public.tar.sha256"
+            if (-not (Test-Path $shaDest)) {
+                Write-Host "Downloading checksum file..."
+                Invoke-WebRequest -Uri $shaAsset.browser_download_url -OutFile $shaDest -UseBasicParsing
+            }
+            Get-Content $shaDest | ForEach-Object {
+                if ($_ -match '^([a-fA-F0-9]{64})\s+(.+)$') {
+                    $expectedHashes[$matches[2].Trim()] = $matches[1].ToLower()
+                }
+            }
+            Write-Host "Loaded $($expectedHashes.Count) expected checksums."
+        } else {
+            Write-Host "WARNING: No checksum file in release, skipping verification."
+        }
         $i = 0
         foreach ($chunk in $chunks) {
             $i++
             $dest = Join-Path $dlDir $chunk.name
-            if (-not (Test-Path $dest)) {
+            $needDownload = $true
+            if (Test-Path $dest) {
+                $expected = $expectedHashes[$chunk.name]
+                if ($expected) {
+                    Write-Host "Verifying chunk $i/$($chunks.Count): $($chunk.name)..."
+                    $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+                    if ($actual -eq $expected) {
+                        Write-Host "Chunk $i/$($chunks.Count) verified OK, skipping download."
+                        $needDownload = $false
+                    } else {
+                        Write-Host "Chunk $i/$($chunks.Count) FAILED verification (corrupt or incomplete), re-downloading."
+                    }
+                } else {
+                    Write-Host "Chunk $i/$($chunks.Count) already present (no checksum to verify), skipping."
+                    $needDownload = $false
+                }
+            }
+            if ($needDownload) {
                 Write-Host "Downloading chunk $i/$($chunks.Count): $($chunk.name)..."
                 Invoke-WebRequest -Uri $chunk.browser_download_url -OutFile $dest -UseBasicParsing
-            } else {
-                Write-Host "Chunk $i/$($chunks.Count) already present, skipping."
+                $expected = $expectedHashes[$chunk.name]
+                if ($expected) {
+                    $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
+                    if ($actual -ne $expected) {
+                        throw "Checksum mismatch for $($chunk.name) after download. Expected $expected, got $actual."
+                    }
+                    Write-Host "Chunk $i/$($chunks.Count) downloaded and verified."
+                }
             }
         }
         Write-Host "Reassembling tarball..."
