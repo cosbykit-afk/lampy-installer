@@ -8,32 +8,46 @@ no Docker required.
 ## Requirements
 
 - Windows 10 version 2004+ or Windows 11 (64-bit)
-- 40 GB free disk space (the install is ~35 GB)
+- 25 GB free disk space (the install is ~20 GB)
 - 8 GB RAM minimum, 16 GB recommended
 - Administrator rights (for the install only)
 - Internet access (for the initial download)
 
 ## Install
 
-1. Download **Lampy-Setup.exe** from the
-   [Releases page](https://github.com/cosbykit-afk/lampy-installer/releases).
-2. Right-click it → **Run as administrator**.
-3. The installer will:
+1. Download **install.ps1** and **uninstall.ps1** from this repo
+   (or clone it).
+2. Right-click PowerShell → **Run as administrator**.
+3. Run:
+   ```powershell
+   .\install.ps1
+   ```
+4. The installer will:
+   - Download the Lampy system image (10.6 GB, in 2 GB chunks from
+     GitHub Releases) — this takes a while on first run
    - Enable WSL2 if it isn't already (may ask you to reboot once, then re-run)
-   - Import the Lampy system (this takes several minutes — it's 30+ GB)
+   - Import the Lampy system as a WSL distro
    - Start all 7 services
    - Register Lampy to start automatically when Windows boots
-4. When it finishes, open your browser:
+5. When it finishes, open your browser:
    - Forum: http://localhost/app/
    - R Theory site: http://localhost/r-theory/
    - code-server: http://localhost:8080/
 
-That's it. No Docker, no command line, no configuration.
+That's it. No Docker, no command line beyond the one install command, no
+configuration.
+
+> **Note:** If you already have the tarball locally (e.g. `lampy-wsl-slim.tar`
+> on disk), pass it directly to skip the download:
+> ```powershell
+> .\install.ps1 -TarballPath "C:\path\to\lampy-wsl-slim.tar"
+> ```
 
 ## What gets installed
 
 - **Location:** `C:\Lampy\`
   - `C:\Lampy\wsl\` — the Lampy Linux system (WSL2 distro)
+  - `C:\Lampy\download\` — downloaded image chunks (safe to delete after install)
   - `C:\Lampy\install.ps1`, `uninstall.ps1` — installer scripts
 - **WSL distro:** named `lampy` (see it with `wsl --list`)
 - **Boot startup:** a Scheduled Task named `Lampy` starts all services at boot
@@ -111,7 +125,7 @@ wsl --export lampy C:\Lampy\lampy-full-backup.tar
 
 Run as administrator:
 ```powershell
-C:\Lampy\uninstall.ps1
+.\uninstall.ps1
 ```
 
 This removes the WSL distro, the boot task, and `C:\Lampy\`. Your backups
@@ -138,11 +152,13 @@ wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf status p
 
 ## Building from source
 
-See [BUILD.md](BUILD.md) for the full build pipeline
-(Docker image → WSL tarball → `Lampy-Setup.exe` via NSIS).
+See [BUILD.md](BUILD.md) for the full pipeline
+(Docker image → slimmed WSL tarball → GitHub Releases chunks).
 
 ## Version
 
-- Installer: 1.0.0
+- Installer: 1.0.0-slim
 - Base image: `kitcosby/lampy-single:windows-1.0.0`
   (digest `sha256:69a301fb52d664e31105972d88b1d2431d923e2bb8474e2c531e08a59e004455`)
+- System image: `lampy-wsl-slim.tar` (10.6 GB, slimmed 2026-09-27 —
+  removed 5.2 GB of unused torch/CUDA/ML packages)
