@@ -120,7 +120,7 @@ if (-not $tarball) {
 }
 if (-not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
 
-Write-Step "1/5 Ensuring WSL2 is available"
+Write-Step "1/6 Ensuring WSL2 is available"
 $wslOk = $false
 try {
     $wslList = wsl --list --verbose 2>&1
@@ -137,7 +137,7 @@ if (-not $wslOk) {
 }
 wsl --set-default-version 2 | Out-Null
 
-Write-Step "2/5 Importing lampy WSL distro"
+Write-Step "2/6 Importing lampy WSL distro"
 $wslDir = Join-Path $InstallDir "wsl"
 New-Item -ItemType Directory -Force -Path $wslDir | Out-Null
 $existing = wsl --list --quiet | Where-Object { $_ -eq $DistroName }
@@ -148,7 +148,7 @@ if ($existing) {
 wsl --import $DistroName $wslDir $tarball
 if ($LASTEXITCODE -ne 0) { throw "wsl --import failed" }
 
-Write-Step "3/5 Configuring services inside WSL"
+Write-Step "3/6 Configuring services inside WSL"
 # The image ships /etc/supervisor/conf.d/lampy.conf with all 7 services, but it
 # is Docker-specific. Apply WSL adaptations:
 wsl -d $DistroName -u root bash -c "mkdir -p /var/run/supervisor /var/log/supervisor /var/run/postgresql; chown postgres:postgres /var/run/postgresql; chmod 2775 /var/run/postgresql; ln -sf /usr/lib/postgresql/16/bin/postgres /usr/local/bin/postgres; ln -sf /usr/lib/postgresql/16/bin/pg_ctl /usr/local/bin/pg_ctl; ln -sf /usr/lib/postgresql/16/bin/initdb /usr/local/bin/initdb"
