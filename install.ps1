@@ -14,7 +14,8 @@ param(
     [string]$InstallDir = "C:\Lampy",
     [string]$DistroName = "lampy",
     [string]$TarballPath = "",
-    [string]$ReleaseTag = "v1.0.0"
+    [string]$ReleaseTag = "v1.0.0",
+    [string]$Password = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -190,6 +191,30 @@ wsl -d $DistroName -u root bash -c "mkdir -p /var/run/supervisor /var/log/superv
 Get-Content -Path (Join-Path $PSScriptRoot "wsl-envfix.py") -Raw | wsl -d $DistroName -u root python3
 if ($LASTEXITCODE -ne 0) { throw "wsl-envfix.py failed" }
 
+# Set the code-server (web IDE) password. Prompt securely if not passed via -Password.
+# Injected into the supervisor conf inside the distro (mode 600, root-only).
+if (-not $Password) {
+    $secPw = Read-Host "Enter a password for the web IDE (code-server)" -AsSecureString
+    $Password = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
+        [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secPw))
+    if (-not $Password) { throw "Password cannot be empty." }
+}
+$pwB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($Password))
+$Password = $null
+$setPwPy = @'
+import base64, re, sys
+pw = base64.b64decode(sys.argv[1]).decode("utf-8")
+p = "/etc/supervisor/conf.d/lampy.conf"
+s = open(p).read()
+s2, n = re.subn(r"(?m)^environment=PASSWORD=.*$", lambda m: "environment=PASSWORD=" + pw, s)
+if n == 0:
+    raise SystemExit("PASSWORD line not found in lampy.conf")
+open(p, "w").write(s2)
+print("code-server password set")
+'@
+$setPwPy | wsl -d $DistroName -u root python3 - $pwB64
+if ($LASTEXITCODE -ne 0) { throw "Failed to set code-server password" }
+
 # Boot supervisord on every WSL distro start
 
 Write-Step "5/7 Fetching latest R Theory and Bible websites from GitHub"
@@ -203,7 +228,10 @@ if ($LASTEXITCODE -ne 0) { Write-Warning "Bible website download failed, using b
 
 Write-Step "6/7 Registering boot startup (Task Scheduler)"
 $taskName = "Lampy"
-$action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d $DistroName -u root /usr/local/bin/lampy-boot.sh"
+# Wake-only: WSL's [boot] command (lampy-boot.sh) already starts supervisord
+# when the distro boots. Launching supervisord again here would start a
+# duplicate that dies on the socket conflict.
+$action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d $DistroName -- true"
 $trigger = New-ScheduledTaskTrigger -AtStartup
 $principal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -LogonType ServiceAccount -RunLevel Highest
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
