@@ -58,30 +58,86 @@ configuration.
 - **Ports used:** 80 (web), 443 (https), 5432 (PostgreSQL), 8080 (code-server),
   11434 (Ollama), 2525/2465/2587/1143/1993/1110 (mail)
 
-## Default passwords
+## Change your passwords (do this first!)
 
-The install ships with default passwords. **Change these before exposing
-Lampy to the internet.**
+Lampy ships with default passwords that everyone knows. **Change them
+right after installing**, especially before putting Lampy on the internet.
 
-| Service      | Credential                              |
-|--------------|-----------------------------------------|
-| PostgreSQL   | user `postgres`, password `password`    |
-| code-server  | password `password`                     |
-| Forum admin  | set up on first visit to `/app/`       |
+### 1. code-server password
 
-To change the PostgreSQL password:
+code-server is the in-browser code editor at http://localhost:8080/.
+The default password is `password`.
 
-```powershell
-wsl -d lampy -u postgres psql -c "ALTER USER postgres PASSWORD 'your-new-password';"
-```
+To change it:
 
-Then update the pgai-worker config:
+1. Open PowerShell (no need for admin this time).
+2. Run:
+   ```powershell
+   wsl -d lampy
+   ```
+   You're now inside Lampy's Linux system. Your prompt will change.
+3. Run:
+   ```bash
+   nano ~/.config/code-server/config.yaml
+   ```
+4. Find the line that says `password: password` and change it to
+   something only you know, e.g. `password: MyNewPassword123`
+5. Press `Ctrl+O`, then `Enter` to save. Press `Ctrl+X` to exit nano.
+6. Type `exit` to leave Lampy's Linux system and return to PowerShell.
+7. Restart code-server:
+   ```powershell
+   wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf restart codeserver
+   ```
 
-```powershell
-# Edit /etc/supervisor/conf.d/lampy.conf inside WSL and replace
-# POSTGRES_PASSWORD="password" with your new password, then:
-wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf restart pgai-worker
-```
+### 2. PostgreSQL password
+
+The database user is `postgres` and the default password is `password`.
+Several Lampy services use this password, so you need to update it in
+two places: the database itself, and the config file that tells the
+services what the password is.
+
+**Step A — change it in the database:**
+
+1. Open PowerShell.
+2. Run (replace `YourNewDbPassword` with your own):
+   ```powershell
+   wsl -d lampy -u postgres psql -c "ALTER USER postgres PASSWORD 'YourNewDbPassword';"
+   ```
+3. You should see `ALTER ROLE`. That means it worked.
+
+**Step B — tell Lampy's services about the new password:**
+
+1. Open the config file:
+   ```powershell
+   wsl -d lampy
+   ```
+   ```bash
+   sudo nano /etc/supervisor/conf.d/lampy.conf
+   ```
+2. Find the line containing `POSTGRES_PASSWORD=password`
+   (it's in the pgai-worker section).
+3. Change `password` to your new password from Step A.
+   Make sure there are no extra spaces.
+4. Press `Ctrl+O`, `Enter` to save, `Ctrl+X` to exit.
+5. Type `exit` to return to PowerShell.
+6. Restart the affected service:
+   ```powershell
+   wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf restart pgai-worker
+   ```
+
+### 3. Forum admin account
+
+There is no default forum admin. The first time you visit
+http://localhost/app/ you'll be asked to create an admin account.
+Pick a strong password — this is your forum's master key.
+
+### Quick reference
+
+| Service     | Default                             | Where to change it                |
+|-------------|-------------------------------------|-----------------------------------|
+| code-server | password `password`                 | `~/.config/code-server/config.yaml` inside WSL |
+| PostgreSQL  | user `postgres`, password `password` | `psql` + `/etc/supervisor/conf.d/lampy.conf` |
+| Forum admin | (none — you create it)              | First visit to http://localhost/app/ |
 
 ## Managing Lampy
 
