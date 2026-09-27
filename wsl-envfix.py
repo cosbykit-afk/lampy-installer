@@ -34,5 +34,21 @@ print("wsl config patched")
 
 # Boot supervisord on every WSL distro start
 with open("/etc/wsl.conf", "w") as f:
-    f.write("[boot]\ncommand = supervisord -c /etc/supervisor/conf.d/lampy.conf\n")
+    f.write("[boot]\ncommand = /usr/local/bin/lampy-boot.sh\n")
 print("wsl.conf written")
+
+# Boot wrapper: recreates tmpfs dirs (/var/run is wiped on every WSL boot)
+with open("/usr/local/bin/lampy-boot.sh", "w") as f:
+    f.write("""#!/bin/bash
+# Lampy boot wrapper: recreate tmpfs directories, then start supervisord
+mkdir -p /var/run/supervisor /var/log/supervisor /var/run/postgresql
+chown postgres:postgres /var/run/postgresql
+chmod 2775 /var/run/postgresql
+ln -sf /usr/lib/postgresql/16/bin/postgres /usr/local/bin/postgres
+ln -sf /usr/lib/postgresql/16/bin/pg_ctl /usr/local/bin/pg_ctl
+ln -sf /usr/lib/postgresql/16/bin/initdb /usr/local/bin/initdb
+exec supervisord -c /etc/supervisor/conf.d/lampy.conf
+""")
+import os
+os.chmod("/usr/local/bin/lampy-boot.sh", 0o755)
+print("boot wrapper written")
