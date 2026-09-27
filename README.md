@@ -1,56 +1,148 @@
-# Lampy Windows Installer
+# Lampy for Windows
 
-Builds a Windows installation file (`Lampy-Setup.exe`) from code that installs
-the full Lampy stack (PostgreSQL+TimescaleDB, Apache, Ollama, James, code-server,
-pgai-worker, Flask forum) via WSL2 — no Docker required on the target machine.
+Lampy is a self-hosted forum stack with AI features: PostgreSQL + TimescaleDB,
+Apache, Ollama (local LLM), Apache James (mail), code-server, pgAI vectorizer,
+and the Flask forum app. This installer runs it on Windows via WSL2 —
+no Docker required.
 
-## Architecture
+## Requirements
 
+- Windows 10 version 2004+ or Windows 11 (64-bit)
+- 40 GB free disk space (the install is ~35 GB)
+- 8 GB RAM minimum, 16 GB recommended
+- Administrator rights (for the install only)
+- Internet access (for the initial download)
+
+## Install
+
+1. Download **Lampy-Setup.exe** from the
+   [Releases page](https://github.com/cosbykit-afk/lampy-installer/releases).
+2. Right-click it → **Run as administrator**.
+3. The installer will:
+   - Enable WSL2 if it isn't already (may ask you to reboot once, then re-run)
+   - Import the Lampy system (this takes several minutes — it's 30+ GB)
+   - Start all 7 services
+   - Register Lampy to start automatically when Windows boots
+4. When it finishes, open your browser:
+   - Forum: http://localhost/app/
+   - R Theory site: http://localhost/r-theory/
+   - code-server: http://localhost:8080/
+
+That's it. No Docker, no command line, no configuration.
+
+## What gets installed
+
+- **Location:** `C:\Lampy\`
+  - `C:\Lampy\wsl\` — the Lampy Linux system (WSL2 distro)
+  - `C:\Lampy\install.ps1`, `uninstall.ps1` — installer scripts
+- **WSL distro:** named `lampy` (see it with `wsl --list`)
+- **Boot startup:** a Scheduled Task named `Lampy` starts all services at boot
+- **Ports used:** 80 (web), 443 (https), 5432 (PostgreSQL), 8080 (code-server),
+  11434 (Ollama), 2525/2465/2587/1143/1993/1110 (mail)
+
+## Default passwords
+
+The install ships with default passwords. **Change these before exposing
+Lampy to the internet.**
+
+| Service      | Credential                              |
+|--------------|-----------------------------------------|
+| PostgreSQL   | user `postgres`, password `password`    |
+| code-server  | password `password`                     |
+| Forum admin  | set up on first visit to `/app/`       |
+
+To change the PostgreSQL password:
+
+```powershell
+wsl -d lampy -u postgres psql -c "ALTER USER postgres PASSWORD 'your-new-password';"
 ```
-Build machine (Toetop):
-  Dockerfile → docker build → lampy-single image
-      → docker export → lampy-wsl.tar (WSL distro rootfs)
-      → NSIS → Lampy-Setup.exe
 
-Target machine (user's Windows):
-  Lampy-Setup.exe
-      → enable WSL2 (if needed)
-      → wsl --import lampy C:\Lampy\wsl lampy-wsl.tar
-      → configure services (supervisord)
-      → Task Scheduler: start on boot
-      → ports 80/443/5432/8080/11434... forwarded
+Then update the pgai-worker config:
+
+```powershell
+# Edit /etc/supervisor/conf.d/lampy.conf inside WSL and replace
+# POSTGRES_PASSWORD="password" with your new password, then:
+wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf restart pgai-worker
 ```
 
-## Files
+## Managing Lampy
 
-- `build.ps1` — Build pipeline: image → WSL tarball → installer .exe. Run on the
-  build machine. Everything from code, no manual steps.
-- `install.ps1` — Installer logic. Bundled into the .exe, runs on the target
-  machine. Idempotent: safe to re-run.
-- `lampy.nsi` — NSIS script that wraps `install.ps1` + `lampy-wsl.tar` into
-  `Lampy-Setup.exe`.
-- `uninstall.ps1` — Clean removal: unregister WSL distro, remove scheduled task,
-  delete `C:\Lampy`.
+**Check service status:**
+```powershell
+wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf status
+```
 
-## Status
+**Restart all services:**
+```powershell
+wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf restart all
+```
 
-- [x] Docker image builds and validates (7/7 services)
-- [x] WSL distro tarball exports and boots (2026-09-27: `lampy-test` distro,
-      all 7/7 services RUNNING via supervisord, forum + R Theory HTTP 200,
-      559 users in database)
-- [ ] install.ps1 completes on a clean Windows machine (code written, WSL fixes baked in)
-- [ ] NSIS .exe wraps and installs end-to-end
-- [ ] Bootstraps correctly: services start on Windows boot, no manual steps
+**Stop Lampy (keeps data):**
+```powershell
+Stop-ScheduledTask -TaskName "Lampy"
+wsl --terminate lampy
+```
 
-### WSL adaptations required (proven 2026-09-27)
+**Start Lampy again:**
+```powershell
+Start-ScheduledTask -TaskName "Lampy"
+```
 
-The Docker image's supervisor config needs these changes for WSL:
-1. Create `/var/run/supervisor/`, `/var/log/supervisor/`, `/var/run/postgresql/`
-   (Docker creates these at container start; WSL does not)
-2. Symlink postgres binaries to `/usr/local/bin/` (not on WSL PATH)
-3. Append `[unix_http_server]`, `[supervisorctl]`, `[rpcinterface:supervisor]`
-   sections (Docker image omits them)
-4. Set `PATH` + `PGDATA` in `[program:postgres]` environment
-5. Set `POSTGRES_PASSWORD` in `[program:pgai-worker]` environment
-6. Kill stale apache processes before starting (they hold port 80)
-7. `wsl.conf` `[boot]` command launches supervisord on distro start
+**Open a Linux shell inside Lampy:**
+```powershell
+wsl -d lampy
+```
+
+## Backing up
+
+The database lives inside the WSL distro. To back it up:
+
+```powershell
+wsl -d lampy -u postgres pg_dump -Fc forum > C:\Lampy\forum-backup.dump
+```
+
+To back up the entire Lampy system (distro + data):
+
+```powershell
+wsl --export lampy C:\Lampy\lampy-full-backup.tar
+```
+
+## Uninstall
+
+Run as administrator:
+```powershell
+C:\Lampy\uninstall.ps1
+```
+
+This removes the WSL distro, the boot task, and `C:\Lampy\`. Your backups
+(if you made any) are kept.
+
+## Troubleshooting
+
+**"WSL2 not installed" or virtualization errors:**
+Enable virtualization in your BIOS/UEFI, then run `wsl --install` in an
+admin PowerShell and reboot.
+
+**Port 80 already in use:**
+Another web server (IIS, Skype, etc.) is holding port 80. Stop it or
+disable it, then restart Lampy.
+
+**Services won't start after a Windows update:**
+Run `wsl --shutdown`, then `Start-ScheduledTask -TaskName "Lampy"`.
+
+**Forum shows a database error:**
+Check PostgreSQL is running:
+```powershell
+wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf status postgres
+```
+
+## Building from source
+
+See [BUILD.md](BUILD.md) for the full build pipeline
+(Docker image → WSL tarball → `Lampy-Setup.exe` via NSIS).
+
+## Version
+
+- Installer: 1.0.0
+- Base image: `kitcosby/lampy-single:windows-1.0.0`
+  (digest `sha256:69a301fb52d664e31105972d88b1d2431d923e2bb8474e2c531e08a59e004455`)
