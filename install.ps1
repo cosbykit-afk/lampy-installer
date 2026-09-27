@@ -202,4 +202,5 @@ if ($failed -gt 0) {
 Write-Host "`nLampy installed and running." -ForegroundColor Green
 Write-Host "Forum:       http://localhost/app/"
 Write-Host "R Theory:    http://localhost/r-theory/"
+Write-Host "Bible:       http://localhost/bible/"
 Write-Host "code-server: http://localhost:8080/"
