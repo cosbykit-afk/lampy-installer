@@ -32,6 +32,24 @@ if (-not $admin) { throw "Lampy installer must run as Administrator." }
 
 # Locate the tarball: explicit path, local file, or download from GitHub Releases
 $tarball = $TarballPath
+Write-Step "1/7 Ensuring WSL2 is available"
+$wslOk = $false
+try {
+    $wslList = wsl --list --verbose 2>&1
+    $wslOk = ($LASTEXITCODE -eq 0)
+} catch {
+    $wslOk = $false
+}
+if (-not $wslOk) {
+    Write-Host "Enabling WSL..."
+    dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart | Out-Null
+    dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null
+    Write-Host "WSL enabled. A reboot is required, then re-run the installer."
+    exit 2
+}
+wsl --set-default-version 2 | Out-Null
+
+
 if (-not $tarball) {
     $localTar = Join-Path $PSScriptRoot "lampy-wsl-slim.tar"
     if (Test-Path $localTar) {
@@ -41,7 +59,7 @@ if (-not $tarball) {
 }
 if (-not $tarball) {
     # Download chunked tarball from GitHub Releases and reassemble
-    Write-Step "Downloading Lampy system image (11 GB in 7 chunks)"
+    Write-Step "2/7 Downloading Lampy system image (11 GB in 7 chunks)"
     $releaseUrl = "https://github.com/cosbykit-afk/lampy-installer/releases/download/$ReleaseTag"
     $dlDir = Join-Path $InstallDir "download"
     New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
@@ -134,26 +152,10 @@ if (-not $tarball) {
         }
         Write-Host "Tarball ready: $([math]::Round($finalSize/1GB,1)) GB"
     }
+}
 if (-not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
 
-Write-Step "1/6 Ensuring WSL2 is available"
-$wslOk = $false
-try {
-    $wslList = wsl --list --verbose 2>&1
-    $wslOk = ($LASTEXITCODE -eq 0)
-} catch {
-    $wslOk = $false
-}
-if (-not $wslOk) {
-    Write-Host "Enabling WSL..."
-    dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart | Out-Null
-    dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null
-    Write-Host "WSL enabled. A reboot is required, then re-run the installer."
-    exit 2
-}
-wsl --set-default-version 2 | Out-Null
-
-Write-Step "2/6 Importing lampy WSL distro"
+Write-Step "3/7 Importing lampy WSL distro"
 $wslDir = Join-Path $InstallDir "wsl"
 New-Item -ItemType Directory -Force -Path $wslDir | Out-Null
 $existing = wsl --list --quiet | Where-Object { $_ -eq $DistroName }
@@ -164,7 +166,7 @@ if ($existing) {
 wsl --import $DistroName $wslDir $tarball
 if ($LASTEXITCODE -ne 0) { throw "wsl --import failed" }
 
-Write-Step "3/6 Configuring services inside WSL"
+Write-Step "4/7 Configuring services inside WSL"
 # The image ships /etc/supervisor/conf.d/lampy.conf with all 7 services, but it
 # is Docker-specific. Apply WSL adaptations:
 wsl -d $DistroName -u root bash -c "mkdir -p /var/run/supervisor /var/log/supervisor /var/run/postgresql; chown postgres:postgres /var/run/postgresql; chmod 2775 /var/run/postgresql; ln -sf /usr/lib/postgresql/16/bin/postgres /usr/local/bin/postgres; ln -sf /usr/lib/postgresql/16/bin/pg_ctl /usr/local/bin/pg_ctl; ln -sf /usr/lib/postgresql/16/bin/initdb /usr/local/bin/initdb"
@@ -176,7 +178,7 @@ if ($LASTEXITCODE -ne 0) { throw "wsl-envfix.py failed" }
 
 # Boot supervisord on every WSL distro start
 
-Write-Step "4/6 Fetching latest R Theory and Bible websites from GitHub"
+Write-Step "5/7 Fetching latest R Theory and Bible websites from GitHub"
 # R Theory website (static) -> /var/www/html/r-theory/
 wsl -d $DistroName -u root bash -c "rm -rf /var/www/html/r-theory && mkdir -p /var/www/html && cd /var/www/html && curl -sL https://github.com/cosbykit-afk/r-theory-rewrite/archive/refs/heads/main.tar.gz | tar xz && mv r-theory-rewrite-main r-theory && chown -R www-data:www-data r-theory"
 if ($LASTEXITCODE -ne 0) { Write-Warning "R Theory download failed, using baked-in version" }
@@ -185,7 +187,7 @@ if ($LASTEXITCODE -ne 0) { Write-Warning "R Theory download failed, using baked-
 wsl -d $DistroName -u root bash -c "rm -rf /opt/bible/website && mkdir -p /opt/bible && cd /opt/bible && curl -sL https://github.com/cosbykit-afk/bible-project/archive/refs/heads/main.tar.gz | tar xz && mv bible-project-main/website website && rm -rf bible-project-main"
 if ($LASTEXITCODE -ne 0) { Write-Warning "Bible website download failed, using baked-in version" }
 
-Write-Step "5/6 Registering boot startup (Task Scheduler)"
+Write-Step "6/7 Registering boot startup (Task Scheduler)"
 $taskName = "Lampy"
 $action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d $DistroName -u root /usr/local/bin/lampy-boot.sh"
 $trigger = New-ScheduledTaskTrigger -AtStartup
@@ -196,7 +198,7 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings | Out-Null
 Write-Host "Scheduled task '$taskName' registered."
 
-Write-Step "6/6 Starting Lampy and verifying"
+Write-Step "7/7 Starting Lampy and verifying"
 Start-ScheduledTask -TaskName $taskName
 Write-Host "Waiting for services to boot..."
 Start-Sleep -Seconds 60
