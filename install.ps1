@@ -101,7 +101,7 @@ $wslDir = Join-Path $InstallDir "wsl"
 New-Item -ItemType Directory -Force -Path $wslDir | Out-Null
 $existing = wsl --list --quiet | Where-Object { $_ -eq $DistroName }
 if ($existing) {
-    Write-Host "Distro '$DistroName' already registered — unregistering for a clean import."
+    Write-Host "Distro '$DistroName' already registered -- unregistering for a clean import."
     wsl --unregister $DistroName
 }
 wsl --import $DistroName $wslDir $tarball
@@ -150,8 +150,8 @@ foreach ($c in $checks) {
         try { $r = Invoke-WebRequest -Uri $c.Url -UseBasicParsing -TimeoutSec 10; $ok = $r.StatusCode -eq 200 }
         catch { $ok = $false }
     }
-    Write-Host ("  {0}: {1}" -f $c.Name, $(if ($ok) { "OK" } else { "FAILED" }))
-    if (-not $ok) { $failed++ }
+    if ($ok) { $status = "OK" } else { $status = "FAILED"; $failed++ }
+    Write-Host ("  {0}: {1}" -f $c.Name, $status)
 }
 
 if ($failed -gt 0) {
