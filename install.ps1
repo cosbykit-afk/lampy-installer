@@ -17,7 +17,10 @@ param(
     [string]$ReleaseTag = "v1.0.0-slim"
 )
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = "Continue"
+# Note: "Continue" (not "Stop") because native commands (wsl.exe, dism.exe)
+# write to stderr, which PowerShell would otherwise treat as terminating.
+# Real failures are caught via explicit throw and $LASTEXITCODE checks below.
 
 function Write-Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 
@@ -77,8 +80,14 @@ if (-not $tarball) {
 if (-not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
 
 Write-Step "1/5 Ensuring WSL2 is available"
-$wslList = wsl --list --verbose 2>&1
-if ($LASTEXITCODE -ne 0) {
+$wslOk = $false
+try {
+    $wslList = wsl --list --verbose 2>&1
+    $wslOk = ($LASTEXITCODE -eq 0)
+} catch {
+    $wslOk = $false
+}
+if (-not $wslOk) {
     Write-Host "Enabling WSL..."
     dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart | Out-Null
     dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null
