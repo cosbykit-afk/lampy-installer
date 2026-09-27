@@ -14,7 +14,7 @@ param(
     [string]$InstallDir = "C:\Lampy",
     [string]$DistroName = "lampy",
     [string]$TarballPath = "",
-    [string]$ReleaseTag = "v1.0.0-slim"
+    [string]$ReleaseTag = "v1.0.0"
 )
 
 $ErrorActionPreference = "Continue"
@@ -41,17 +41,17 @@ if (-not $tarball) {
 }
 if (-not $tarball) {
     # Download chunked tarball from GitHub Releases and reassemble
-    Write-Step "Downloading Lampy system image (10.6 GB in 2 GB chunks)"
+    Write-Step "Downloading Lampy system image (11 GB in 7 chunks)"
     $releaseUrl = "https://github.com/cosbykit-afk/lampy-installer/releases/download/$ReleaseTag"
     $dlDir = Join-Path $InstallDir "download"
     New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
-    $tarball = Join-Path $dlDir "lampy-wsl-slim.tar"
+    $tarball = Join-Path $dlDir "lampy-public.tar"
     if (-not (Test-Path $tarball)) {
         # Discover chunk count from the release metadata
         $apiUrl = "https://api.github.com/repos/cosbykit-afk/lampy-installer/releases/tags/$ReleaseTag"
         $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing
-        $chunks = $release.assets | Where-Object { $_.name -like "lampy-wsl-slim.tar.part*" } | Sort-Object name
-        if (-not $chunks) { throw "No tarball chunks found in release $ReleaseTag" }
+        $chunks = $release.assets | Where-Object { $_.name -like "lampy-public.tar.part-*" } | Sort-Object name
+        if (-not $chunks) { throw "No tarball chunks found in release $ReleaseTag. The release assets may still be uploading. Check https://github.com/cosbykit-afk/lampy-installer/releases/tag/$ReleaseTag" }
         Write-Host "Found $($chunks.Count) chunks."
         $i = 0
         foreach ($chunk in $chunks) {
