@@ -86,6 +86,22 @@ function Get-ChunkResumable($url, $dest, $expectedSize) {
     } finally { $client.Dispose(); $req.Dispose() }
 }
 
+function Get-ChunkWithRetry($url, $dest, $expectedSize) {
+    # v1.0.2: transient drops on 1.8GB chunks are expected; retry up to 3 times.
+    # Get-ChunkResumable resumes via HTTP Range, so each retry picks up where
+    # the previous attempt stopped instead of starting over.
+    for ($a = 1; $a -le 3; $a++) {
+        try {
+            return Get-ChunkResumable $url $dest $expectedSize
+        } catch {
+            Write-Host "  download attempt $a/3 failed: $($_.Exception.Message)"
+            if ($a -eq 3) { throw "Download failed after 3 attempts: $url" }
+            Write-Host "  waiting 10s, then resuming where it stopped..."
+            Start-Sleep -Seconds 10
+        }
+    }
+}
+
 function Get-ChunkHashes($manifestPath) {
     $hashes = @{}
     if (Test-Path $manifestPath) {
@@ -205,7 +221,7 @@ if (-not $tarball) {
             $dest = Join-Path $dlDir $chunkName
             $expected = $chunkSizes[$chunkName]
             Write-Host "Chunk $i/$($chunkNames.Count): $chunkName"
-            $r = Get-ChunkResumable "$baseUrl/$chunkName" $dest $expected
+            $r = Get-ChunkWithRetry "$baseUrl/$chunkName" $dest $expected
             if ($r -eq "already-complete") { Write-Host "  already present, skipping." }
         }
         # Verify: size always, SHA256 when the manifest is available.
@@ -233,7 +249,7 @@ if (-not $tarball) {
                 $dest = Join-Path $dlDir $chunkName
                 Write-Host "Re-downloading $chunkName ..."
                 Remove-Item $dest -Force -ErrorAction SilentlyContinue
-                Get-ChunkResumable "$baseUrl/$chunkName" $dest $chunkSizes[$chunkName] | Out-Null
+                Get-ChunkWithRetry "$baseUrl/$chunkName" $dest $chunkSizes[$chunkName] | Out-Null
             }
         } while ($bad.Count -gt 0 -and $attempt -lt 2)
         if ($bad.Count -gt 0) { throw "Chunk verification failed after re-download: $($bad -join ', ')" }
