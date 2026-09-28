@@ -5,7 +5,7 @@
 !include "WinMessages.nsh"
 
 !define PRODUCT_NAME "Lampy"
-!define PRODUCT_VERSION "1.0.0"
+!define PRODUCT_VERSION "1.0.2"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "${OUTDIR}\Lampy-Setup.exe"
@@ -35,26 +35,53 @@ FunctionEnd
 ;   complete (size matches) -> skip; missing -> download fresh with progress bar;
 ;   partial -> leave alone, install.ps1 resumes it with HTTP Range and verifies
 ;   every chunk by size and SHA256 before use.
+; v1.0.2: hardened inventory (clears stale size register before measuring, so a
+;   truncated chunk can never read as "already complete"), /RESUME so a dropped
+;   connection offers resume instead of aborting, 3-attempt retry loop, and a
+;   post-download size check (a short file is left for install.ps1 to resume).
 !macro CheckChunk SUFFIX SIZE NUM
   DetailPrint "Chunk ${NUM}/7: part-${SUFFIX}..."
+  StrCpy $8 "" ; clear stale measurement from the previous chunk
   ${If} ${FileExists} "$5\lampy-public.tar.part-${SUFFIX}"
+    ClearErrors
     FileOpen $7 "$5\lampy-public.tar.part-${SUFFIX}" r
+    IfErrors 0 +3
+      DetailPrint "  could not open file - will resume during setup."
+      Goto chunk_${SUFFIX}_done
     FileSeek $7 0 END $8
     FileClose $7
     ${If} $8 == ${SIZE}
       DetailPrint "  already complete, skipping."
     ${Else}
-      DetailPrint "  partial download found - will resume during setup."
+      DetailPrint "  partial download found ($8 of ${SIZE} bytes) - will resume during setup."
     ${EndIf}
   ${Else}
     DetailPrint "  downloading..."
-    inetc::get /CAPTION "Downloading Lampy (${NUM}/7)" "$1/lampy-public.tar.part-${SUFFIX}" "$5\lampy-public.tar.part-${SUFFIX}" /END
+    StrCpy $9 0
+    chunk_${SUFFIX}_retry:
+    IntOp $9 $9 + 1
+    inetc::get /RESUME "The connection dropped while downloading part-${SUFFIX}. Click Retry to resume where it stopped." /CAPTION "Downloading Lampy (${NUM}/7)" "$1/lampy-public.tar.part-${SUFFIX}" "$5\lampy-public.tar.part-${SUFFIX}" /END
     Pop $0
     ${If} $0 != "OK"
+      ${If} $9 < 3
+        DetailPrint "  download interrupted ($0) - retrying (attempt $9/3)..."
+        Goto chunk_${SUFFIX}_retry
+      ${EndIf}
       MessageBox MB_ICONSTOP "Download failed (part-${SUFFIX}: $0). Check your connection and try again."
       Abort
     ${EndIf}
+    StrCpy $8 ""
+    ClearErrors
+    FileOpen $7 "$5\lampy-public.tar.part-${SUFFIX}" r
+    IfErrors 0 +2
+      Goto chunk_${SUFFIX}_done
+    FileSeek $7 0 END $8
+    FileClose $7
+    ${If} $8 != ${SIZE}
+      DetailPrint "  WARNING: downloaded $8 of ${SIZE} bytes - will resume during setup."
+    ${EndIf}
   ${EndIf}
+  chunk_${SUFFIX}_done:
 !macroend
 
 
