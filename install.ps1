@@ -463,12 +463,14 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
 Write-Host "Scheduled task '$taskName' registered."
 
 Write-Step "5/5 Starting Lampy and verifying"
-# REQ-R1: Repair must restart services so config changes (passwords, HOME,
-# etc.) take effect. Shut down any running supervisord first; the boot
-# task then starts it fresh.
+# REQ-R1: Ensure supervisord is running with the current config. Shut down
+# any old instance (e.g. foreground-mode from before the daemon switch),
+# then run the idempotent boot script directly. The scheduled task remains
+# for boot persistence; the installer doesn't rely on it for the immediate
+# start (Start-ScheduledTask on an already-running task is a no-op).
 wsl -d $DistroName -u root -- supervisorctl -c /etc/supervisor/conf.d/lampy.conf shutdown 2>$null | Out-Null
 Start-Sleep -Seconds 10
-Start-ScheduledTask -TaskName $taskName
+wsl -d $DistroName -u root /usr/local/bin/lampy-boot.sh
 Write-Host "Waiting for services to boot..."
 Start-Sleep -Seconds 60
 
