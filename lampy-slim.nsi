@@ -17,7 +17,7 @@
 !include "WinMessages.nsh"
 
 !define PRODUCT_NAME "Lampy"
-!define PRODUCT_VERSION "1.1.2"
+!define PRODUCT_VERSION "1.1.3"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "${OUTDIR}\Lampy-Setup.exe"
@@ -70,6 +70,7 @@ Section "Install"
   File "${OUTDIR}\uninstall.ps1"
   File "${OUTDIR}\manifest.json"
   File "${OUTDIR}\wsl-envfix.py"
+  File "${OUTDIR}\set-passwords.py"
 
   ; Enable Cancel button during the long install (NSIS disables it by default)
   GetDlgItem $0 $HWNDPARENT 2  ; 2 = IDCANCEL
