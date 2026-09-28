@@ -53,30 +53,50 @@ if (-not $tarball) {
 }
 
 function Get-ChunkResumable($url, $dest, $expectedSize) {
-    # Downloads with HTTP Range resume. Skips when the local file already
-    # matches the expected size. Restarts from zero if the server ignores Range.
+    # Downloads with HTTP Range resume. Uses System.Net.HttpWebRequest, which
+    # lives in System.dll - loaded by every PowerShell since 2.0. Deliberately
+    # does NOT use System.Net.Http.HttpClient: that assembly is missing or
+    # unloadable on some older machines (v1.1.1: toy-hp could not load it, so
+    # every chunk download failed 3x with "Cannot find type"). The downloader
+    # must run on the oldest PowerShell the public might have (REQ-D0).
     $start = 0
     if (Test-Path $dest) { $start = (Get-Item $dest).Length }
     if ($expectedSize -and ($start -eq $expectedSize)) { return "already-complete" }
+    if ($expectedSize -and ($start -gt $expectedSize)) {
+        Write-Log "  Local file larger than expected ($start > $expectedSize); restarting from zero."
+        $start = 0
+        Remove-Item $dest -Force -ErrorAction SilentlyContinue
+    }
     if ($start -gt 0) { Write-Log "  Resuming $dest at $start / $expectedSize bytes..." }
-    $handler = New-Object System.Net.Http.HttpClientHandler
-    $client = New-Object System.Net.Http.HttpClient($handler)
-    $client.Timeout = [TimeSpan]::FromHours(6)
-    $client.DefaultRequestHeaders.UserAgent.ParseAdd("Lampy-Installer/1.0")
+    $req = [System.Net.HttpWebRequest]::Create($url)
+    $req.UserAgent = "Lampy-Installer/1.1"
+    $req.Timeout = 300000
+    $req.ReadWriteTimeout = 1800000
+    $req.AllowReadStreamBuffering = $false
+    if ($start -gt 0) { $req.AddRange($start) }
     try {
-        $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Get, $url)
-        if ($start -gt 0) { $req.Headers.Range = New-Object System.Net.Http.Headers.RangeHeaderValue($start, $null) }
-        $resp = $client.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
-        if ($start -gt 0 -and $resp.StatusCode -ne [System.Net.HttpStatusCode]::PartialContent) {
-            Write-Log "  Server did not honor resume; restarting download from zero."
-            $start = 0
-            Remove-Item $dest -Force -ErrorAction SilentlyContinue
+        $resp = $req.GetResponse()
+    } catch [System.Net.WebException] {
+        if ($_.Exception.Response) {
+            $code = [int]$_.Exception.Response.StatusCode
+            $_.Exception.Response.Close()
+            throw "HTTP $code downloading $url"
         }
-        $resp.EnsureSuccessStatusCode() | Out-Null
-        $mode = if (($start -gt 0)) { [System.IO.FileMode]::Append } else { [System.IO.FileMode]::Create }
+        throw
+    }
+    try {
+        $status = [int]$resp.StatusCode
+        if ($status -ge 400) { throw "HTTP $status downloading $url" }
+        if ($start -gt 0 -and $status -ne 206) {
+            Write-Log "  Server did not honor resume (HTTP $status); restarting download from zero."
+            $resp.Close()
+            Remove-Item $dest -Force -ErrorAction SilentlyContinue
+            return Get-ChunkResumable $url $dest $expectedSize
+        }
+        $mode = if ($start -gt 0) { [System.IO.FileMode]::Append } else { [System.IO.FileMode]::Create }
         $fs = New-Object System.IO.FileStream($dest, $mode, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         try {
-            $stream = $resp.Content.ReadAsStreamAsync().GetAwaiter().GetResult()
+            $stream = $resp.GetResponseStream()
             $buf = New-Object byte[] 1048576
             $total = $start
             $lastReport = [DateTime]::UtcNow
@@ -91,7 +111,7 @@ function Get-ChunkResumable($url, $dest, $expectedSize) {
             }
         } finally { $fs.Close() }
         return "downloaded"
-    } finally { $client.Dispose(); $req.Dispose() }
+    } finally { $resp.Close() }
 }
 
 function Get-ChunkWithRetry($url, $dest, $expectedSize) {
@@ -102,7 +122,11 @@ function Get-ChunkWithRetry($url, $dest, $expectedSize) {
         try {
             return Get-ChunkResumable $url $dest $expectedSize
         } catch {
-            Write-Log "  download attempt $a/3 failed: $($_.Exception.Message)"
+            # Log the exception TYPE as well as the message: on 2026-09-28 the
+            # toy-hp machine failed all 3 attempts and the bare message
+            # ("Cannot find...") did not identify the missing assembly.
+            $etype = $_.Exception.GetType().FullName
+            Write-Log "  download attempt $a/3 failed [$etype]: $($_.Exception.Message)"
             if ($a -eq 3) { throw "Download failed after 3 attempts: $url" }
             Write-Log "  waiting 10s, then resuming where it stopped..."
             Start-Sleep -Seconds 10
@@ -121,6 +145,7 @@ if (-not $tarball) {
     $script:LogPath = Join-Path $dlDir "install.log"
 
     Write-Log "=== Lampy installer run ==="
+    Write-Log "Environment: PowerShell $($PSVersionTable.PSVersion) / CLR $($PSVersionTable.CLRVersion) / OS $([Environment]::OSVersion.VersionString)"
     Write-Log "InstallDir=$InstallDir DownloadDir=$dlDir Mode=$InstallMode"
 
     # ---- Manifest discovery (REQ-M1/M2). Public endpoints only; no credentials.
