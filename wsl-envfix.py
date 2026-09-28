@@ -33,6 +33,14 @@ def _fix_pgdata(body):
 _each_section("postgres", _fix_pgdata)
 
 
+# WSL runs supervisord as a DAEMON (not Docker's foreground PID 1 mode).
+# Foreground (nodaemon=true) via a scheduled task is fragile: if supervisord
+# dies, the task ends with no restart; Start-ScheduledTask on a running task
+# is a no-op. Daemon mode lets the boot script ensure it's running.
+if "nodaemon=true" in c:
+    c = c.replace("nodaemon=true", "nodaemon=false")
+
+
 def _fix_ollama_home(body):
     # Ollama panics with "$HOME is not defined" if HOME is unset
     # (2026-09-27, regressed 2026-09-28). Ensure HOME is present,
@@ -62,17 +70,24 @@ with open("/etc/wsl.conf", "w") as f:
     f.write("[boot]\ncommand = /usr/local/bin/lampy-boot.sh\n")
 print("wsl.conf written")
 
-# Boot wrapper: recreates tmpfs dirs (/var/run is wiped on every WSL boot)
+# Boot wrapper: idempotent "ensure supervisord is running". Recreates tmpfs
+# dirs (/var/run is wiped on every WSL boot), then starts supervisord as a
+# DAEMON if it's not already running. Safe to call repeatedly.
 with open("/usr/local/bin/lampy-boot.sh", "w") as f:
     f.write("""#!/bin/bash
-# Lampy boot wrapper: recreate tmpfs directories, then start supervisord
+# Lampy boot wrapper: recreate tmpfs directories, ensure supervisord daemon.
 mkdir -p /var/run/supervisor /var/log/supervisor /var/run/postgresql
 chown postgres:postgres /var/run/postgresql
 chmod 2775 /var/run/postgresql
 ln -sf /usr/lib/postgresql/16/bin/postgres /usr/local/bin/postgres
 ln -sf /usr/lib/postgresql/16/bin/pg_ctl /usr/local/bin/pg_ctl
 ln -sf /usr/lib/postgresql/16/bin/initdb /usr/local/bin/initdb
-exec supervisord -c /etc/supervisor/conf.d/lampy.conf
+# Already running? Nothing to do.
+if supervisorctl -c /etc/supervisor/conf.d/lampy.conf status >/dev/null 2>&1; then
+    exit 0
+fi
+# Start as a daemon (nodaemon=false in lampy.conf for WSL).
+supervisord -c /etc/supervisor/conf.d/lampy.conf
 """)
 import os
 os.chmod("/usr/local/bin/lampy-boot.sh", 0o755)
