@@ -25,7 +25,7 @@ no Docker required.
    (The `-ExecutionPolicy Bypass` is needed because the script isn't
    digitally signed — this only affects that one run.)
 4. The installer will:
-   - Download the Lampy system image (10.6 GB, in 2 GB chunks from
+   - Download the Lampy system image (11 GB, in 7 chunks from
      GitHub Releases) — this takes a while on first run
    - Enable WSL2 if it isn't already (may ask you to reboot once, then re-run)
    - Import the Lampy system as a WSL distro
@@ -44,7 +44,7 @@ configuration.
 > **Note:** If you already have the tarball locally (e.g. `lampy-public.tar`
 > on disk), pass it directly to skip the download:
 > ```powershell
-> powershell -ExecutionPolicy Bypass -File .\install.ps1 -TarballPath "C:\path\to\lampy-wsl-slim.tar"
+> powershell -ExecutionPolicy Bypass -File .\install.ps1 -TarballPath "C:\path\to\lampy-public.tar"
 > ```
 
 ## What gets installed
@@ -215,10 +215,30 @@ wsl -d lampy -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf status p
 See [BUILD.md](BUILD.md) for the full pipeline
 (Docker image → slimmed WSL tarball → GitHub Releases chunks).
 
+## Build status (2026-09-28)
+
+- **Release `v1.0.0`: COMPLETE** — all 7 chunks of `lampy-public.tar`
+  (11 GB) plus `lampy-public.tar.sha256` are on GitHub Releases
+- **Installer verifies downloads** — `install.ps1` checks each chunk's
+  SHA256 against the manifest; on re-run it skips verified chunks
+  and re-downloads only corrupt or missing ones
+- **Build dependencies** — Python wheelhouse (3 parts) + Ollama mirror
+  (4 parts) on the `build-deps-v1` release of
+  [lampy-deps](https://github.com/cosbykit-afk/lampy-deps)
+
+## Known issues
+
+- **Stale `install.ps1` copies** — if you downloaded the installer before
+  2026-09-28, re-download `install.ps1`; older copies don't verify chunk
+  checksums on retry and will re-download good chunks
+- **`lampy-wsl-slim.tar` name in old docs** — some earlier docs and scripts
+  reference `lampy-wsl-slim.tar`; the released file is `lampy-public.tar`
+- **First download is slow** — 11 GB over GitHub Releases; the installer
+  resumes cleanly, so interrupting and re-running is safe
+
 ## Version
 
-- Installer: 1.0.0
+- Installer: 1.1.6
 - Base image: `kitcosby/lampy-single:windows-1.0.0`
   (digest `sha256:69a301fb52d664e31105972d88b1d2431d923e2bb8474e2c531e08a59e004455`)
-- System image: `lampy-wsl-slim.tar` (10.6 GB, slimmed 2026-09-27 —
-  removed 5.2 GB of unused torch/CUDA/ML packages)
+- System image: `lampy-public.tar` (11 GB, 7 chunks, released 2026-09-28)

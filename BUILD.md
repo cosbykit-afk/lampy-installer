@@ -31,8 +31,8 @@ wsl -d lampy-test -u root supervisorctl -c /etc/supervisor/conf.d/lampy.conf sta
 # Expected: apache2, codeserver, forum, james, ollama, pgai-worker, postgres all RUNNING
 
 # 5. Re-export the slimmed tarball
-wsl --export lampy-test C:\Users\kitco\lampy-wsl-slim.tar
-# Result: ~10.6 GB (was 15.78 GB)
+wsl --export lampy-test C:\Users\kitco\lampy-public.tar
+# Result: ~11 GB
 ```
 
 ### Why slim?
@@ -58,18 +58,18 @@ $chunkSize = 2GB
 ```
 
 Upload the chunks as release assets to a GitHub Release tagged
-`v1.0.0-slim`. The installer (`install.ps1`) downloads and reassembles them
+`v1.0.0`. The installer (`install.ps1`) downloads, SHA256-verifies, and reassembles them
 automatically.
 
 ## How the installer works (install.ps1)
 
 On the target machine, as Administrator:
 
-1. **Tarball** — uses `-TarballPath` if given, a local `lampy-wsl-slim.tar`
+1. **Tarball** — uses `-TarballPath` if given, a local `lampy-public.tar`
    if present, otherwise downloads chunks from GitHub Releases and reassembles
 2. **WSL2 check** — enables WSL + VirtualMachinePlatform via DISM if missing
    (reboot required, then re-run)
-3. **Import** — `wsl --import lampy C:\Lampy\wsl lampy-wsl-slim.tar`
+3. **Import** — `wsl --import lampy C:\Lampy\wsl lampy-public.tar`
 4. **WSL adaptations** — the Docker image needs fixes to run under WSL:
    - Create `/var/run/supervisor/`, `/var/log/supervisor/`, `/var/run/postgresql/`
    - Symlink postgres binaries into `/usr/local/bin/` (not on WSL PATH)
@@ -90,7 +90,7 @@ All steps are idempotent — safe to re-run.
 - Exported `kitcosby/lampy-single:windows-1.0.0`, imported as WSL distro
 - Removed 5.2 GB dead packages, all 7/7 services RUNNING via supervisord
 - Forum + R Theory HTTP 200, 559 users in the database
-- Re-exported as `lampy-wsl-slim.tar` (10.6 GB)
+- Re-exported as `lampy-public.tar` (11 GB)
 
 ## Releasing a new version
 
