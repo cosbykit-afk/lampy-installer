@@ -32,6 +32,28 @@ def _fix_pgdata(body):
     return "\n".join(lines)
 _each_section("postgres", _fix_pgdata)
 
+
+def _fix_ollama_home(body):
+    # Ollama panics with "$HOME is not defined" if HOME is unset
+    # (2026-09-27, regressed 2026-09-28). Ensure HOME is present,
+    # preserving any other environment vars. Idempotent.
+    lines = body.split("\n")
+    out = []
+    found = False
+    for l in lines:
+        if l.startswith("environment="):
+            found = True
+            env = l[len("environment="):]
+            if "HOME=" not in env:
+                env = env + ',HOME="/root"' if env else 'HOME="/root"'
+            out.append("environment=" + env)
+        else:
+            out.append(l)
+    if not found:
+        out.insert(1, 'environment=HOME="/root"')
+    return "\n".join(out)
+_each_section("ollama", _fix_ollama_home)
+
 open(p, "w").write(c)
 print("wsl config patched")
 
