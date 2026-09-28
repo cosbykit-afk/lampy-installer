@@ -31,6 +31,25 @@ Function .onUserAbort
 FunctionEnd
 
 Section "Install"
+  ; Check if Lampy is already installed (by looking for the WSL virtual disk)
+  ; If found, ask user whether to reinstall, repair, or cancel
+  DetailPrint "Checking for existing Lampy installation..."
+  ${If} ${FileExists} "$INSTDIR\wsl\ext4.vhdx"
+    MessageBox MB_YESNOCANCEL|MB_ICONQUESTION "Lampy appears to be already installed in $INSTDIR.$\n$\nYes = Reinstall (removes existing and installs fresh)$\nNo = Repair (keeps data, re-runs setup)$\nCancel = Exit installer" IDYES reinstall IDNO repair
+    repair:
+      DetailPrint "Repair mode: keeping existing data, re-running setup..."
+      StrCpy $4 "repair"
+      Goto install_continue
+    reinstall:
+      DetailPrint "Reinstall mode: will remove existing installation..."
+      StrCpy $4 "reinstall"
+      Goto install_continue
+    ; Cancel falls through to Abort
+    Abort
+  ${EndIf}
+  StrCpy $4 "fresh"
+  
+  install_continue:
   SetOutPath "$INSTDIR"
   ; NOTE: Tarball NOT bundled (too large for NSIS mmap). Download chunks
   ; from GitHub Releases with progress bar, then run install.ps1 for WSL setup.
@@ -115,7 +134,7 @@ Section "Install"
   
   ; Run the installer logic (as the current user, so WSL registers for them)
   ; Chunks are in the fixed $5 download folder; pass it to install.ps1
-  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\install.ps1" -InstallDir "$INSTDIR" -DownloadDir "$5"'
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\install.ps1" -InstallDir "$INSTDIR" -DownloadDir "$5" -InstallMode "$4"'
   Pop $0
   
   ; Disable Cancel again when done
