@@ -1,4 +1,4 @@
-; Lampy-Setup.nsi — thin public installer wrapper (v1.1.1)
+; Lampy-Setup.nsi — thin public installer wrapper (v1.1.2)
 ;
 ; Design (see Installer_Requirements.md — requirements before code):
 ;   - NSIS NEVER downloads. install.ps1 owns manifest discovery, chunk
@@ -8,7 +8,8 @@
 ;   - Every run appends to install.log in the download folder.
 ;
 ; Build (Linux): sed 's|\${OUTDIR}\\|\${OUTDIR}/|g' lampy-slim.nsi > /tmp/b/lampy-slim.nsi
-;   && cp install.ps1 uninstall.ps1 manifest.json /tmp/b/
+;   && cp install.ps1 uninstall.ps1 manifest.json wsl-envfix.py /tmp/b/
+;   && python3 verify-bundle.py /tmp/b
 ;   && makensis -DOUTDIR=/tmp/b /tmp/b/lampy-slim.nsi
 ; Build (Windows): makensis /DOUTDIR="C:\Lampy\installer-build" lampy-slim.nsi
 
@@ -16,7 +17,7 @@
 !include "WinMessages.nsh"
 
 !define PRODUCT_NAME "Lampy"
-!define PRODUCT_VERSION "1.1.1"
+!define PRODUCT_VERSION "1.1.2"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "${OUTDIR}\Lampy-Setup.exe"
@@ -68,6 +69,7 @@ Section "Install"
   File "${OUTDIR}\install.ps1"
   File "${OUTDIR}\uninstall.ps1"
   File "${OUTDIR}\manifest.json"
+  File "${OUTDIR}\wsl-envfix.py"
 
   ; Enable Cancel button during the long install (NSIS disables it by default)
   GetDlgItem $0 $HWNDPARENT 2  ; 2 = IDCANCEL
