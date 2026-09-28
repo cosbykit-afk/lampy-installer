@@ -1,4 +1,4 @@
-; Lampy-Setup.nsi — thin public installer wrapper (v1.1.0)
+; Lampy-Setup.nsi — thin public installer wrapper (v1.1.1)
 ;
 ; Design (see Installer_Requirements.md — requirements before code):
 ;   - NSIS NEVER downloads. install.ps1 owns manifest discovery, chunk
@@ -16,7 +16,7 @@
 !include "WinMessages.nsh"
 
 !define PRODUCT_NAME "Lampy"
-!define PRODUCT_VERSION "1.1.0"
+!define PRODUCT_VERSION "1.1.1"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "${OUTDIR}\Lampy-Setup.exe"
