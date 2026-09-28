@@ -41,36 +41,18 @@ Section "Install"
   GetDlgItem $0 $HWNDPARENT 2  ; 2 = IDCANCEL
   EnableWindow $0 1
 
-  ; Use a FIXED download folder (not tied to $INSTDIR) so re-runs find existing chunks
-  ; This prevents creating a new download folder every time
+  ; Use a FIXED download folder so re-runs find existing chunks
   StrCpy $5 "$LOCALAPPDATA\Lampy\download"
-  DetailPrint "Checking for existing downloads..."
-  CreateDirectory "$5"
-  DetailPrint "Install folder: $INSTDIR"
   DetailPrint "Download folder: $5"
-  DetailPrint "LocalAppData: $LOCALAPPDATA"
+  CreateDirectory "$5"
   
-  ; Location 1: C:\Lampy\download (original installer)
+  ; Migrate from C:\Lampy\download (original installer location)
   DetailPrint "Checking C:\Lampy\download..."
   ${If} ${FileExists} "C:\Lampy\download\lampy-public.tar.part-aa"
-    DetailPrint "Found chunks in C:\Lampy\download, migrating..."
+    DetailPrint "Found chunks, migrating..."
     CopyFiles /SILENT "C:\Lampy\download\lampy-public.tar.part-*" "$5\"
   ${Else}
     DetailPrint "Not found in C:\Lampy\download"
-  ${EndIf}
-  
-  ; Location 2: $INSTDIR\download (in case a previous run used a different install dir)
-  ${If} "$INSTDIR\download" != "$5"
-    ${If} ${FileExists} "$INSTDIR\download\lampy-public.tar.part-aa"
-      DetailPrint "Found chunks in $INSTDIR\download, migrating..."
-      CopyFiles /SILENT "$INSTDIR\download\lampy-public.tar.part-*" "$5\"
-    ${EndIf}
-  ${EndIf}
-  
-  ; Location 3: Desktop (in case user manually placed them there)
-  ${If} ${FileExists} "$DESKTOP\lampy-public.tar.part-aa"
-    DetailPrint "Found chunks on Desktop, migrating..."
-    CopyFiles /SILENT "$DESKTOP\lampy-public.tar.part-*" "$5\"
   ${EndIf}
 
   ; Download the 7 tarball chunks with progress bar (inetc plugin)
