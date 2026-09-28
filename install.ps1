@@ -42,10 +42,12 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent() `
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
-# REQ-W0 / D-OS: fail fast BEFORE any download. Windows 11+ only; WSL2 needs
-# virtualization. Never download 11GB and then discover the machine can't
-# import it.
+# REQ-W0 / D-OS: fail fast BEFORE any download. Windows 11 is the FLOOR
+# (minimum), not an exact match: anything newer passes too. Never download
+# 11GB and then discover the machine can't import it.
 $osv = [Environment]::OSVersion.Version
+# Floor check: refuse Major < 10 (Win7/8), or Win10 (Major 10, build < 22000).
+# Win11 (10.22000+) and any future Windows version pass.
 if ($osv.Major -lt 10 -or ($osv.Major -eq 10 -and $osv.Build -lt 22000)) {
     throw "Lampy requires Windows 11 or later. This PC runs Windows $($osv.Major) (build $($osv.Build))."
 }
