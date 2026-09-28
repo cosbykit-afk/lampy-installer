@@ -17,7 +17,7 @@
 !include "WinMessages.nsh"
 
 !define PRODUCT_NAME "Lampy"
-!define PRODUCT_VERSION "1.1.5"
+!define PRODUCT_VERSION "1.1.6"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "${OUTDIR}\Lampy-Setup.exe"
