@@ -1,4 +1,6 @@
-"""Fix supervisor config for WSL: postgres PATH/PGDATA, pgai-worker password."""
+"""Fix supervisor config for WSL: postgres PATH/PGDATA, RPC sections for
+supervisorctl. Idempotent: safe to re-run (repair mode). Password-related
+environment is owned by set-passwords.py, not this script."""
 import re
 
 p = "/etc/supervisor/conf.d/lampy.conf"
@@ -17,17 +19,18 @@ serverurl=unix:///var/run/supervisor/supervisor.sock
 supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 """
 
-fixed = 'environment=PATH="/usr/lib/postgresql/16/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",PGDATA="/home/postgres/pgdata/data"'
-c = re.sub(r"\[program:postgres\].*?(?=\n\[)",
-            lambda m: re.sub(r"^environment=.*$", fixed, m.group(0), flags=re.M),
-            c, flags=re.S)
 
-# pgai-worker needs POSTGRES_PASSWORD (defaults match the image)
-c = re.sub(r"\[program:pgai-worker\].*?(?=\n\[)",
-            lambda m: re.sub(r"^command=",
-                             "environment=POSTGRES_PASSWORD=password\ncommand=",
-                             m.group(0), flags=re.M),
-            c, flags=re.S)
+def _each_section(name, fn):
+    global c
+    c = re.sub(r"(\[program:%s\].*?)(?=\n\[)" % re.escape(name),
+               lambda m: fn(m.group(1)), c, flags=re.S)
+
+
+def _fix_pgdata(body):
+    lines = [l for l in body.split("\n") if not l.startswith("environment=")]
+    lines.insert(1, 'environment=PATH="/usr/lib/postgresql/16/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",PGDATA="/home/postgres/pgdata/data"')
+    return "\n".join(lines)
+_each_section("postgres", _fix_pgdata)
 
 open(p, "w").write(c)
 print("wsl config patched")
