@@ -463,6 +463,11 @@ Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
 Write-Host "Scheduled task '$taskName' registered."
 
 Write-Step "5/5 Starting Lampy and verifying"
+# REQ-R1: Repair must restart services so config changes (passwords, HOME,
+# etc.) take effect. Shut down any running supervisord first; the boot
+# task then starts it fresh.
+wsl -d $DistroName -u root -- supervisorctl -c /etc/supervisor/conf.d/lampy.conf shutdown 2>$null | Out-Null
+Start-Sleep -Seconds 10
 Start-ScheduledTask -TaskName $taskName
 Write-Host "Waiting for services to boot..."
 Start-Sleep -Seconds 60
@@ -481,12 +486,12 @@ if ($script:needPasswords -and $script:pgPw) {
 
 $checks = @(
     @{ Name = "PostgreSQL"; Cmd = "wsl -d $DistroName -u root pg_isready -h localhost" },
-    @{ Name = "Apache";     Url = "http://localhost:80/" },
-    @{ Name = "Forum";      Url = "http://localhost:80/app/" },
-    @{ Name = "Ollama";     Url = "http://localhost:11434/" }
+    @{ Name = "Apache";     WslUrl = "http://localhost:80/" },
+    @{ Name = "Forum";      WslUrl = "http://localhost:80/app/" },
+    @{ Name = "Ollama";     WslUrl = "http://localhost:11434/" }
 )
 if ($script:codeServerEnabled) {
-    $checks += @{ Name = "code-server"; Url = "http://localhost:8080/" }
+    $checks += @{ Name = "code-server"; WslUrl = "http://localhost:8080/" }
 } else {
     Write-Host "  code-server: DISABLED (no password set; IDE stays off by design)"
 }
@@ -496,8 +501,13 @@ foreach ($c in $checks) {
         Invoke-Expression $c.Cmd | Out-Null
         $ok = $LASTEXITCODE -eq 0
     } else {
-        try { $r = Invoke-WebRequest -Uri $c.Url -UseBasicParsing -TimeoutSec 10; $ok = $r.StatusCode -eq 200 }
-        catch { $ok = $false }
+        # REQ-V1: Verify from INSIDE WSL, not from Windows. Windows->WSL
+        # localhost forwarding is unreliable (verified broken on Toetop
+        # 2026-09-28); services bind to localhost inside the distro, so
+        # curl there is the ground truth. Never use Invoke-WebRequest
+        # http://localhost/ from Windows for WSL services.
+        $code = wsl -d $DistroName -- curl -s -o /dev/null -w '%{http_code}' $c.WslUrl --max-time 10 2>$null
+        $ok = $code -eq "200"
     }
     if ($ok) { $status = "OK" } else { $status = "FAILED"; $failed++ }
     Write-Host ("  {0}: {1}" -f $c.Name, $status)
