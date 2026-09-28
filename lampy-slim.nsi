@@ -30,6 +30,34 @@ Function .onUserAbort
     Abort  ; Actually abort the installation
 FunctionEnd
 
+; CheckChunk SUFFIX SIZE NUM
+; Inventory one chunk in the fixed download folder ($5):
+;   complete (size matches) -> skip; missing -> download fresh with progress bar;
+;   partial -> leave alone, install.ps1 resumes it with HTTP Range and verifies
+;   every chunk by size and SHA256 before use.
+!macro CheckChunk SUFFIX SIZE NUM
+  DetailPrint "Chunk ${NUM}/7: part-${SUFFIX}..."
+  ${If} ${FileExists} "$5\lampy-public.tar.part-${SUFFIX}"
+    FileOpen $7 "$5\lampy-public.tar.part-${SUFFIX}" r
+    FileSeek $7 0 END $8
+    FileClose $7
+    ${If} $8 == ${SIZE}
+      DetailPrint "  already complete, skipping."
+    ${Else}
+      DetailPrint "  partial download found - will resume during setup."
+    ${EndIf}
+  ${Else}
+    DetailPrint "  downloading..."
+    inetc::get /CAPTION "Downloading Lampy (${NUM}/7)" "$1/lampy-public.tar.part-${SUFFIX}" "$5\lampy-public.tar.part-${SUFFIX}" /END
+    Pop $0
+    ${If} $0 != "OK"
+      MessageBox MB_ICONSTOP "Download failed (part-${SUFFIX}: $0). Check your connection and try again."
+      Abort
+    ${EndIf}
+  ${EndIf}
+!macroend
+
+
 Section "Install"
   ; Check if Lampy is already installed (by looking for the WSL virtual disk)
   ; If found, ask user whether to reinstall, repair, or cancel
@@ -77,58 +105,23 @@ Section "Install"
   ; Download the 7 tarball chunks with progress bar (inetc plugin)
   ; Release v1.0.0: lampy-public.tar.part-aa through part-ag (~10.6 GB total)
   ; Using fixed $5 download folder (not $INSTDIR) so re-runs reuse chunks
-  DetailPrint "Downloading Lampy system image (10.6 GB in 7 chunks)..."
+  DetailPrint "Checking for already-downloaded chunks..."
   StrCpy $1 "https://github.com/cosbykit-afk/lampy-installer/releases/download/v1.0.0"
-  
-  ; inetc shows progress bar automatically; /RESUME continues partial downloads
-  inetc::get /RESUME "" /CAPTION "Downloading Lampy (1/7)" "$1/lampy-public.tar.part-aa" "$5\lampy-public.tar.part-aa" /END
-  Pop $0
-  ${If} $0 != "OK"
-    MessageBox MB_ICONSTOP "Download failed (part-aa: $0). Check your connection and try again."
-    Abort
-  ${EndIf}
-  
-  inetc::get /RESUME "" /CAPTION "Downloading Lampy (2/7)" "$1/lampy-public.tar.part-ab" "$5\lampy-public.tar.part-ab" /END
-  Pop $0
-  ${If} $0 != "OK"
-    MessageBox MB_ICONSTOP "Download failed (part-ab: $0). Check your connection and try again."
-    Abort
-  ${EndIf}
-  
-  inetc::get /RESUME "" /CAPTION "Downloading Lampy (3/7)" "$1/lampy-public.tar.part-ac" "$5\lampy-public.tar.part-ac" /END
-  Pop $0
-  ${If} $0 != "OK"
-    MessageBox MB_ICONSTOP "Download failed (part-ac: $0). Check your connection and try again."
-    Abort
-  ${EndIf}
-  
-  inetc::get /RESUME "" /CAPTION "Downloading Lampy (4/7)" "$1/lampy-public.tar.part-ad" "$5\lampy-public.tar.part-ad" /END
-  Pop $0
-  ${If} $0 != "OK"
-    MessageBox MB_ICONSTOP "Download failed (part-ad: $0). Check your connection and try again."
-    Abort
-  ${EndIf}
-  
-  inetc::get /RESUME "" /CAPTION "Downloading Lampy (5/7)" "$1/lampy-public.tar.part-ae" "$5\lampy-public.tar.part-ae" /END
-  Pop $0
-  ${If} $0 != "OK"
-    MessageBox MB_ICONSTOP "Download failed (part-ae: $0). Check your connection and try again."
-    Abort
-  ${EndIf}
-  
-  inetc::get /RESUME "" /CAPTION "Downloading Lampy (6/7)" "$1/lampy-public.tar.part-af" "$5\lampy-public.tar.part-af" /END
-  Pop $0
-  ${If} $0 != "OK"
-    MessageBox MB_ICONSTOP "Download failed (part-af: $0). Check your connection and try again."
-    Abort
-  ${EndIf}
-  
-  inetc::get /RESUME "" /CAPTION "Downloading Lampy (7/7)" "$1/lampy-public.tar.part-ag" "$5\lampy-public.tar.part-ag" /END
-  Pop $0
-  ${If} $0 != "OK"
-    MessageBox MB_ICONSTOP "Download failed (part-ag: $0). Check your connection and try again."
-    Abort
-  ${EndIf}
+
+  ; NOTE on resume: inetc's /RESUME flag does NOT resume a partial file from a
+  ; previous run - it only offers a retry dialog when a transfer errors out.
+  ; So the installer inventories chunks itself: complete chunks are skipped,
+  ; missing chunks download fresh with the progress bar, and PARTIAL chunks are
+  ; left for install.ps1, which resumes them with HTTP Range and then verifies
+  ; every chunk by size and SHA256 before use.
+  ; Expected sizes for release v1.0.0 (keep in sync with the URLs above).
+  !insertmacro CheckChunk "aa" "1887436800" "1"
+  !insertmacro CheckChunk "ab" "1887436800" "2"
+  !insertmacro CheckChunk "ac" "1887436800" "3"
+  !insertmacro CheckChunk "ad" "1887436800" "4"
+  !insertmacro CheckChunk "ae" "1887436800" "5"
+  !insertmacro CheckChunk "af" "1887436800" "6"
+  !insertmacro CheckChunk "ag" "228433920" "7"
 
   DetailPrint "Download complete. Setting up WSL..."
   
