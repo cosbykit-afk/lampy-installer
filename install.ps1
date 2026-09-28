@@ -42,6 +42,23 @@ $isAdmin = ([Security.Principal.WindowsPrincipal] `
     [Security.Principal.WindowsIdentity]::GetCurrent() `
 ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 
+# REQ-W0 / D-OS: fail fast BEFORE any download. Windows 11+ only; WSL2 needs
+# virtualization. Never download 11GB and then discover the machine can't
+# import it.
+$osv = [Environment]::OSVersion.Version
+if ($osv.Major -lt 10 -or ($osv.Major -eq 10 -and $osv.Build -lt 22000)) {
+    throw "Lampy requires Windows 11 or later. This PC runs Windows $($osv.Major) (build $($osv.Build))."
+}
+$virtFw = $null; $hypervisor = $null
+try { $virtFw = (Get-CimInstance Win32_Processor -ErrorAction Stop).VirtualizationFirmwareEnabled }
+catch { try { $virtFw = (Get-WmiObject Win32_Processor -ErrorAction Stop).VirtualizationFirmwareEnabled } catch {} }
+try { $hypervisor = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).HypervisorPresent }
+catch { try { $hypervisor = (Get-WmiObject Win32_ComputerSystem -ErrorAction Stop).HypervisorPresent } catch {} }
+if (($virtFw -eq $false) -and ($hypervisor -ne $true)) {
+    throw "This PC can't run WSL2: virtualization is unavailable. Enable VT-x/AMD-V in the firmware settings, then re-run."
+}
+Write-Host "Pre-flight OK: Windows 11 (build $($osv.Build)), virtualization available."
+
 # Locate the tarball: explicit path, local file, or download from GitHub Releases
 $tarball = $TarballPath
 if (-not $tarball) {
@@ -334,8 +351,14 @@ if ($InstallMode -eq "repair" -and $existing) {
     Write-Host "Repair mode: distro '$DistroName' already registered -- skipping import, re-running configuration."
 } else {
     if ($existing) {
-        Write-Host "Distro '$DistroName' already registered -- unregistering for a clean import."
+        # NEVER silently destroy an existing distro (v1.1.2 did this and wiped
+        # a live install). Ask explicitly; default is to keep it.
+        Write-Warning "A WSL distro named '$DistroName' is already registered."
+        $ans = Read-Host "Unregister it and import fresh? ALL DATA inside it will be DELETED. Type YES (all caps) to confirm"
+        if ($ans -cne "YES") { throw "Installation cancelled; existing distro left untouched." }
+        Write-Host "Unregistering '$DistroName'..."
         wsl --unregister $DistroName
+        if ($LASTEXITCODE -ne 0) { throw "wsl --unregister failed" }
     }
     wsl --import $DistroName $wslDir $tarball
     if ($LASTEXITCODE -ne 0) { throw "wsl --import failed" }
@@ -350,6 +373,71 @@ wsl -d $DistroName -u root bash -c "mkdir -p /var/run/supervisor /var/log/superv
 # (wsl-envfix.py ships alongside this script; piped to python3 via stdin)
 Get-Content -Path (Join-Path $PSScriptRoot "wsl-envfix.py") -Raw | wsl -d $DistroName -u root python3
 if ($LASTEXITCODE -ne 0) { throw "wsl-envfix.py failed" }
+
+# REQ-PW: install-time passwords. No image default survives. Prompts use
+# secure (non-echoed) input; passwords live in memory only and are NEVER
+# written to install.log. Applied to the supervisor config via
+# set-passwords.py (stdin, base64 JSON) and to PostgreSQL roles via ALTER
+# ROLE once postgres is up.
+function Unprotect-SecureString([System.Security.SecureString]$s) {
+    $bstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($s)
+    try { return [Runtime.InteropServices.Marshal]::PtrToStringAuto($bstr) }
+    finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($bstr) }
+}
+function New-RandomPassword([int]$len = 24) {
+    # Unambiguous characters only (no 0/O, 1/l/I): generated passwords are
+    # displayed once for the user to copy by hand.
+    $chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789!@#$%^&*-_'.ToCharArray()
+    $rng = New-Object System.Security.Cryptography.RNGCryptoServiceProvider
+    $bytes = New-Object byte[] $len
+    $rng.GetBytes($bytes)
+    -join ($bytes | ForEach-Object { $chars[$_ % $chars.Length] })
+}
+function Read-LayerPassword($label, $emptyMeans) {
+    while ($true) {
+        $pa = Unprotect-SecureString (Read-Host -AsSecureString "Password for $label [empty = $emptyMeans]")
+        if ([string]::IsNullOrEmpty($pa)) { return "" }
+        $pb = Unprotect-SecureString (Read-Host -AsSecureString "Confirm password for $label")
+        if ($pa -ceq $pb) { return $pa }
+        Write-Host "Passwords did not match; try again."
+    }
+}
+
+# Fresh installs always set passwords. Repair keeps existing ones unless the
+# image defaults are still in place (i.e. passwords were never configured).
+$script:needPasswords = ($InstallMode -ne "repair")
+$script:codeServerEnabled = $false
+$script:pgPw = $null
+$script:forumDbPw = $null
+if ($InstallMode -eq "repair") {
+    $confText = wsl -d $DistroName -u root cat /etc/supervisor/conf.d/lampy.conf 2>$null
+    if ($confText -match "POSTGRES_PASSWORD=password") { $script:needPasswords = $true }
+    if ($confText -match "environment=PASSWORD=") { $script:codeServerEnabled = $true }
+}
+if ($script:needPasswords) {
+    Write-Step "Setting passwords (image defaults are not kept)"
+    $pgPw = Read-LayerPassword "PostgreSQL superuser 'postgres'" "generate a random one and show it once"
+    if ([string]::IsNullOrEmpty($pgPw)) { $pgPw = New-RandomPassword; $showPg = $true } else { $showPg = $false }
+    $forumDbPw = Read-LayerPassword "forum database user 'forum'" "generate a random one and show it once"
+    if ([string]::IsNullOrEmpty($forumDbPw)) { $forumDbPw = New-RandomPassword; $showForum = $true } else { $showForum = $false }
+    $codePw = Read-LayerPassword "code-server IDE" "leave the IDE disabled"
+    $script:codeServerEnabled = -not [string]::IsNullOrEmpty($codePw)
+    $script:pgPw = $pgPw
+    $script:forumDbPw = $forumDbPw
+    $secretKey = New-RandomPassword 64
+
+    $pwJson = @{ pg_password = $pgPw; forum_db_password = $forumDbPw;
+                 codeserver_password = $codePw; forum_secret_key = $secretKey } | ConvertTo-Json -Compress
+    $pwB64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($pwJson))
+    $pyScript = (Get-Content -Path (Join-Path $PSScriptRoot "set-passwords.py") -Raw).Replace('__CONFIG_B64__', $pwB64)
+    $pyScript | wsl -d $DistroName -u root python3
+    if ($LASTEXITCODE -ne 0) { throw "set-passwords.py failed" }
+    Write-Host "Passwords written to service configuration (not logged)."
+
+    if ($showPg) { Write-Host "Generated PostgreSQL password (save it now): $pgPw" -ForegroundColor Yellow }
+    if ($showForum) { Write-Host "Generated forum DB password (save it now): $forumDbPw" -ForegroundColor Yellow }
+    $codePw = $null; $secretKey = $null; $pwJson = $null; $pwB64 = $null; $pyScript = $null
+}
 
 # Boot supervisord on every WSL distro start
 
@@ -376,13 +464,30 @@ Write-Step "5/5 Starting Lampy and verifying"
 Start-ScheduledTask -TaskName $taskName
 Write-Host "Waiting for services to boot..."
 Start-Sleep -Seconds 60
+
+if ($script:needPasswords -and $script:pgPw) {
+    # REQ-PW5: sync PostgreSQL role passwords to the prompted values.
+    # Via stdin (never on a command line); single quotes escaped for SQL.
+    # pgai-worker connects as the postgres superuser; the forum as 'forum'.
+    $sql = "ALTER ROLE postgres PASSWORD '" + ($script:pgPw -replace "'", "''") + "'; " +
+           "ALTER ROLE forum PASSWORD '" + ($script:forumDbPw -replace "'", "''") + "';"
+    $sql | wsl -d $DistroName -u postgres psql -v ON_ERROR_STOP=1 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw "Failed to set PostgreSQL role passwords" }
+    Write-Host "PostgreSQL role passwords updated."
+    $script:pgPw = $null; $script:forumDbPw = $null
+}
+
 $checks = @(
     @{ Name = "PostgreSQL"; Cmd = "wsl -d $DistroName -u root pg_isready -h localhost" },
     @{ Name = "Apache";     Url = "http://localhost:80/" },
     @{ Name = "Forum";      Url = "http://localhost:80/app/" },
-    @{ Name = "Ollama";     Url = "http://localhost:11434/" },
-    @{ Name = "code-server"; Url = "http://localhost:8080/" }
+    @{ Name = "Ollama";     Url = "http://localhost:11434/" }
 )
+if ($script:codeServerEnabled) {
+    $checks += @{ Name = "code-server"; Url = "http://localhost:8080/" }
+} else {
+    Write-Host "  code-server: DISABLED (no password set; IDE stays off by design)"
+}
 $failed = 0
 foreach ($c in $checks) {
     if ($c.Cmd) {
