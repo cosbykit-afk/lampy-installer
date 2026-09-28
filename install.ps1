@@ -163,7 +163,41 @@ if (-not $tarball) {
     }
 
     $tarball = Join-Path $dlDir "lampy-public.tar"
-    if (-not (Test-Path $tarball)) {
+    # Expected collated-tarball size: 6x1887436800 + 228433920 = 11553054720
+    $tarballSize = 11553054720
+    # Checksum for the collated tarball (published alongside the release).
+    $tarballHashPath = Join-Path $dlDir "lampy-public.tar.full.sha256"
+    if (-not (Test-Path $tarballHashPath)) {
+        try {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/cosbykit-afk/lampy-installer/main/lampy-public.tar.full.sha256" -OutFile $tarballHashPath -UseBasicParsing -TimeoutSec 30
+        } catch { Write-Host "No collated-tarball checksum available; will verify by size only." }
+    }
+    $tarballHash = $null
+    if (Test-Path $tarballHashPath) {
+        $hline = Get-Content $tarballHashPath | Where-Object { $_ -match "^[0-9a-fA-F]{64}" } | Select-Object -First 1
+        if ($hline -match "^([0-9a-fA-F]{64})") { $tarballHash = $matches[1].ToLower() }
+    }
+    function Test-Tarball($path) {
+        if (-not (Test-Path $path)) { return $false }
+        if ((Get-Item $path).Length -ne $tarballSize) {
+            Write-Host "Collated tarball has wrong size; will rebuild it from chunks."
+            return $false
+        }
+        if ($tarballHash) {
+            Write-Host "Verifying collated tarball SHA256 (10.7 GB, one moment)..."
+            $actual = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLower()
+            if ($actual -ne $tarballHash) {
+                Write-Host "Collated tarball FAILED the hash check; will rebuild it from chunks."
+                return $false
+            }
+            Write-Host "Collated tarball hash OK."
+        } else {
+            Write-Host "Collated tarball size OK."
+        }
+        return $true
+    }
+    if (-not (Test-Tarball $tarball)) {
+        if (Test-Path $tarball) { Remove-Item $tarball -Force }
         $baseUrl = "https://github.com/cosbykit-afk/lampy-installer/releases/download/$ReleaseTag"
         $i = 0
         foreach ($chunkName in $chunkNames) {
@@ -213,8 +247,9 @@ if (-not $tarball) {
             }
         } finally { $outStream.Close() }
         Write-Host "Tarball reassembled: $tarball"
+        if (-not (Test-Tarball $tarball)) { throw "Reassembled tarball failed validation." }
     } else {
-        Write-Host "Tarball already downloaded: $tarball"
+        Write-Host "Tarball already downloaded and verified: $tarball"
     }
 }
 if (-not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
