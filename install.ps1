@@ -413,7 +413,8 @@ $script:pgPw = $null
 $script:forumDbPw = $null
 if ($InstallMode -eq "repair") {
     $confText = wsl -d $DistroName -u root cat /etc/supervisor/conf.d/lampy.conf 2>$null
-    if ($confText -match "POSTGRES_PASSWORD=password") { $script:needPasswords = $true }
+    # Match default postgres password in quoted or unquoted form.
+    if ($confText -match 'POSTGRES_PASSWORD="?password"?') { $script:needPasswords = $true }
     if ($confText -match "environment=PASSWORD=") { $script:codeServerEnabled = $true }
 }
 if ($script:needPasswords) {
