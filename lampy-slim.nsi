@@ -105,6 +105,15 @@ Section "Install"
   ; Download the 7 tarball chunks with progress bar (inetc plugin)
   ; Release v1.0.0: lampy-public.tar.part-aa through part-ag (~10.6 GB total)
   ; Using fixed $5 download folder (not $INSTDIR) so re-runs reuse chunks
+  ; If the collated tarball (all 7 chunks stitched together) is already here
+  ; from a previous run, skip the chunk work entirely. install.ps1 validates
+  ; it by size and SHA256 before use (NSIS integers are 32-bit, so the
+  ; 10.7 GB size check lives there, not here).
+  ${If} ${FileExists} "$5\\lampy-public.tar"
+    DetailPrint "Collated tarball already present - skipping chunk downloads."
+    Goto tarball_ready
+  ${EndIf}
+
   DetailPrint "Checking for already-downloaded chunks..."
   StrCpy $1 "https://github.com/cosbykit-afk/lampy-installer/releases/download/v1.0.0"
 
@@ -123,7 +132,8 @@ Section "Install"
   !insertmacro CheckChunk "af" "1887436800" "6"
   !insertmacro CheckChunk "ag" "228433920" "7"
 
-  DetailPrint "Download complete. Setting up WSL..."
+  tarball_ready:
+  DetailPrint "Chunks ready. Setting up WSL..."
   
   ; Run the installer logic (as the current user, so WSL registers for them)
   ; Chunks are in the fixed $5 download folder; pass it to install.ps1
