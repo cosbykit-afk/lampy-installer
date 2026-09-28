@@ -16,9 +16,10 @@ param(
     [string]$InstallDir = "$env:LOCALAPPDATA\Lampy",
     [string]$DistroName = "lampy",
     [string]$TarballPath = "",
-    [string]$ReleaseTag = "v1.0.0",
+    [string]$ReleaseTag = "",
     [string]$DownloadDir = "",
-    [string]$InstallMode = "fresh"
+    [string]$InstallMode = "fresh",
+    [string]$FallbackManifest = ""
 )
 
 $ErrorActionPreference = "Continue"
@@ -27,6 +28,13 @@ $ErrorActionPreference = "Continue"
 # Real failures are caught via explicit throw and $LASTEXITCODE checks below.
 
 function Write-Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
+
+$script:LogPath = $null
+function Write-Log($msg) {
+    $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
+    Write-Host $line
+    if ($script:LogPath) { Add-Content -Path $script:LogPath -Value $line -ErrorAction SilentlyContinue }
+}
 
 # Elevation is NOT required for a per-user install (WSL distros are per-user,
 # registered under HKCU). Only the one-time WSL feature enablement needs it.
@@ -50,7 +58,7 @@ function Get-ChunkResumable($url, $dest, $expectedSize) {
     $start = 0
     if (Test-Path $dest) { $start = (Get-Item $dest).Length }
     if ($expectedSize -and ($start -eq $expectedSize)) { return "already-complete" }
-    if ($start -gt 0) { Write-Host "  Resuming $dest at $start / $expectedSize bytes..." }
+    if ($start -gt 0) { Write-Log "  Resuming $dest at $start / $expectedSize bytes..." }
     $handler = New-Object System.Net.Http.HttpClientHandler
     $client = New-Object System.Net.Http.HttpClient($handler)
     $client.Timeout = [TimeSpan]::FromHours(6)
@@ -60,7 +68,7 @@ function Get-ChunkResumable($url, $dest, $expectedSize) {
         if ($start -gt 0) { $req.Headers.Range = New-Object System.Net.Http.Headers.RangeHeaderValue($start, $null) }
         $resp = $client.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
         if ($start -gt 0 -and $resp.StatusCode -ne [System.Net.HttpStatusCode]::PartialContent) {
-            Write-Host "  Server did not honor resume; restarting download from zero."
+            Write-Log "  Server did not honor resume; restarting download from zero."
             $start = 0
             Remove-Item $dest -Force -ErrorAction SilentlyContinue
         }
@@ -76,8 +84,8 @@ function Get-ChunkResumable($url, $dest, $expectedSize) {
                 $fs.Write($buf, 0, $n)
                 $total += $n
                 if (([DateTime]::UtcNow - $lastReport).TotalSeconds -ge 15) {
-                    if ($expectedSize) { $pct = [math]::Round(100.0 * $total / $expectedSize, 1); Write-Host "  $total / $expectedSize bytes ($pct%)" }
-                    else { Write-Host "  $total bytes..." }
+                    if ($expectedSize) { $pct = [math]::Round(100.0 * $total / $expectedSize, 1); Write-Log "  $total / $expectedSize bytes ($pct%)" }
+                    else { Write-Log "  $total bytes..." }
                     $lastReport = [DateTime]::UtcNow
                 }
             }
@@ -94,178 +102,180 @@ function Get-ChunkWithRetry($url, $dest, $expectedSize) {
         try {
             return Get-ChunkResumable $url $dest $expectedSize
         } catch {
-            Write-Host "  download attempt $a/3 failed: $($_.Exception.Message)"
+            Write-Log "  download attempt $a/3 failed: $($_.Exception.Message)"
             if ($a -eq 3) { throw "Download failed after 3 attempts: $url" }
-            Write-Host "  waiting 10s, then resuming where it stopped..."
+            Write-Log "  waiting 10s, then resuming where it stopped..."
             Start-Sleep -Seconds 10
         }
     }
 }
 
-function Get-ChunkHashes($manifestPath) {
-    $hashes = @{}
-    if (Test-Path $manifestPath) {
-        foreach ($line in (Get-Content $manifestPath)) {
-            if ($line -match "^([0-9a-fA-F]{64})\s+\*?(.+?)\s*$") { $hashes[$matches[2]] = $matches[1].ToLower() }
-        }
-    }
-    return $hashes
-}
-
+# ---------------------------------------------------------------------------
+# Manifest-driven download (Installer_Requirements.md section 3).
+# install.ps1 is the ONLY downloader. Every run appends to install.log.
+# ---------------------------------------------------------------------------
 if (-not $tarball) {
-    Write-Step "Downloading Lampy system image (10.6 GB in 2 GB chunks)"
-    $releaseUrl = "https://github.com/cosbykit-afk/lampy-installer/releases/download/$ReleaseTag"
+    Write-Step "Downloading Lampy system image"
     if ([string]::IsNullOrEmpty($DownloadDir)) { $dlDir = Join-Path $InstallDir "download" } else { $dlDir = $DownloadDir }
     New-Item -ItemType Directory -Force -Path $dlDir | Out-Null
+    $script:LogPath = Join-Path $dlDir "install.log"
 
-    # Chunk list + expected sizes: GitHub API first (works for any release tag),
-    # fall back to the hardcoded v1.0.0 list if the API fails.
-    $chunkNames = @()
-    $chunkSizes = @{}
-    try {
-        $apiUrl = "https://api.github.com/repos/cosbykit-afk/lampy-installer/releases/tags/$ReleaseTag"
-        $release = Invoke-RestMethod -Uri $apiUrl -UseBasicParsing -TimeoutSec 30
-        $assets = $release.assets | Where-Object { $_.name -like "lampy-public.tar.part-*" } | Sort-Object name
-        foreach ($a in $assets) { $chunkNames += $a.name; $chunkSizes[$a.name] = $a.size }
-        Write-Host "Found $($chunkNames.Count) chunks via API."
-    } catch {
-        Write-Host "API lookup failed ($($_.Exception.Message)), using v1.0.0 chunk list."
-    }
-    if ($chunkNames.Count -eq 0 -and ($ReleaseTag -eq "v1.0.0" -or $ReleaseTag -eq "v1.0.0-slim")) {
-        $chunkNames = @("lampy-public.tar.part-aa", "lampy-public.tar.part-ab", "lampy-public.tar.part-ac", "lampy-public.tar.part-ad", "lampy-public.tar.part-ae", "lampy-public.tar.part-af", "lampy-public.tar.part-ag")
-        Write-Host "Using hardcoded v1.0.0 chunk list ($($chunkNames.Count) chunks)."
-        $chunkSizes = @{
-            "lampy-public.tar.part-aa" = 1887436800
-            "lampy-public.tar.part-ab" = 1887436800
-            "lampy-public.tar.part-ac" = 1887436800
-            "lampy-public.tar.part-ad" = 1887436800
-            "lampy-public.tar.part-ae" = 1887436800
-            "lampy-public.tar.part-af" = 1887436800
-            "lampy-public.tar.part-ag" = 228433920
-        }
-    }
-    if ($chunkNames.Count -eq 0) { throw "No tarball chunks found for release $ReleaseTag" }
+    Write-Log "=== Lampy installer run ==="
+    Write-Log "InstallDir=$InstallDir DownloadDir=$dlDir Mode=$InstallMode"
 
-    # SHA256 manifest for verification (release asset; also honored if already local)
-    $manifestPath = Join-Path $dlDir "lampy-public.tar.sha256"
-    if (-not (Test-Path $manifestPath)) {
+    # ---- Manifest discovery (REQ-M1/M2). Public endpoints only; no credentials.
+    $manifest = $null; $manifestSource = ""; $wantTag = $ReleaseTag
+    if ([string]::IsNullOrEmpty($wantTag)) {
         try {
-            Invoke-WebRequest -Uri "$releaseUrl/lampy-public.tar.sha256" -OutFile $manifestPath -UseBasicParsing -TimeoutSec 30
-            Write-Host "Downloaded chunk hash manifest."
-        } catch { Write-Host "No hash manifest available; will verify by size only." }
+            $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/cosbykit-afk/lampy-installer/releases/latest" -UseBasicParsing -TimeoutSec 30
+            $wantTag = $rel.tag_name
+            Write-Log "Latest installer release via public API: $wantTag"
+        } catch { Write-Log "GitHub API unreachable ($($_.Exception.Message)); trying cached/bundled manifest." }
+    } else { Write-Log "Release override: $wantTag" }
+    if ($wantTag) {
+        $murl = "https://raw.githubusercontent.com/cosbykit-afk/lampy-installer/$wantTag/manifest.json"
+        try {
+            $resp = Invoke-WebRequest -Uri $murl -UseBasicParsing -TimeoutSec 30
+            $manifest = $resp.Content | ConvertFrom-Json
+            $manifestSource = "network ($murl)"
+        } catch { Write-Log "Manifest fetch failed: $murl ($($_.Exception.Message))" }
     }
-    $hashes = Get-ChunkHashes $manifestPath
+    $cachedManifest = Join-Path $dlDir "manifest.json"
+    if (-not $manifest -and (Test-Path $cachedManifest)) {
+        try { $manifest = Get-Content $cachedManifest -Raw | ConvertFrom-Json; $manifestSource = "cache ($cachedManifest)" }
+        catch { Write-Log "Cached manifest is corrupt; ignoring." }
+    }
+    if (-not $manifest -and $FallbackManifest -and (Test-Path $FallbackManifest)) {
+        $manifest = Get-Content $FallbackManifest -Raw | ConvertFrom-Json
+        $manifestSource = "bundled fallback"
+    }
+    if (-not $manifest) { throw "No manifest available: network, cache, and bundled fallback all failed." }
+    Write-Log "Manifest source: $manifestSource | data release: $($manifest.data_release)"
+    try { $manifest | ConvertTo-Json -Depth 6 | Set-Content $cachedManifest -ErrorAction Stop }
+    catch { Write-Log "Could not cache manifest: $($_.Exception.Message)" }
 
-    # Migrate chunks from the legacy C:\Lampy\download location (previous installer
-    # versions). A legacy chunk is only accepted when its size matches the release;
-    # a good chunk already in the download dir is NEVER deleted by migration.
+    $chunks = @($manifest.chunks)
+    $baseUrl = $manifest.base_url
+    $tarballName = $manifest.tarball.name
+    $tarballSize = [long]$manifest.tarball.size
+    $tarballHash = $manifest.tarball.sha256
+    if ($chunks.Count -eq 0) { throw "Manifest has no chunks." }
+    Write-Log "$($chunks.Count) chunks, tarball $($tarballName) ($tarballSize bytes)."
+
+    # ---- Legacy migration, one-time historical shim (REQ-D-FOLDER).
     $legacyDlDir = "C:\Lampy\download"
     if (($legacyDlDir -ne $dlDir) -and (Test-Path $legacyDlDir)) {
-        foreach ($legacyFile in (Get-ChildItem -Path $legacyDlDir -Filter "lampy-public.tar.part-*")) {
-            $dest = Join-Path $dlDir $legacyFile.Name
-            $expected = $chunkSizes[$legacyFile.Name]
+        foreach ($c in $chunks) {
+            $legacyFile = Join-Path $legacyDlDir $c.name
+            if (-not (Test-Path $legacyFile)) { continue }
+            $dest = Join-Path $dlDir $c.name
+            $legacyLen = (Get-Item $legacyFile).Length
             if (-not (Test-Path $dest)) {
-                if ($expected -and ($legacyFile.Length -ne $expected)) {
-                    Write-Host "Legacy chunk $($legacyFile.Name) has wrong size ($($legacyFile.Length)/$expected); ignoring."
-                } else {
-                    Write-Host "Migrating chunk from legacy location: $($legacyFile.Name)"
-                    Move-Item $legacyFile.FullName $dest -Force
-                }
-            } elseif ($expected -and ((Get-Item $dest).Length -eq $expected)) {
-                Write-Host "Chunk $($legacyFile.Name) already good in download dir; removing legacy duplicate."
-                Remove-Item $legacyFile.FullName -Force
+                if ($legacyLen -ne [long]$c.size) { Write-Log "Legacy $($c.name) wrong size ($legacyLen/$($c.size)); ignoring." }
+                else { Write-Log "Migrating legacy chunk: $($c.name)"; Move-Item $legacyFile $dest -Force }
+            } elseif ((Get-Item $dest).Length -eq [long]$c.size) {
+                Write-Log "Chunk $($c.name) already good; removing legacy duplicate."
+                Remove-Item $legacyFile -Force
+            } elseif ($legacyLen -eq [long]$c.size) {
+                Write-Log "Legacy $($c.name) is complete but download-dir copy is partial; using legacy."
+                Move-Item $legacyFile $dest -Force
             }
         }
     }
 
-    $tarball = Join-Path $dlDir "lampy-public.tar"
-    # Expected collated-tarball size: 6x1887436800 + 228433920 = 11553054720
-    $tarballSize = 11553054720
-    # Checksum for the collated tarball (published alongside the release).
-    $tarballHashPath = Join-Path $dlDir "lampy-public.tar.full.sha256"
-    if (-not (Test-Path $tarballHashPath)) {
-        try {
-            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/cosbykit-afk/lampy-installer/main/lampy-public.tar.full.sha256" -OutFile $tarballHashPath -UseBasicParsing -TimeoutSec 30
-        } catch { Write-Host "No collated-tarball checksum available; will verify by size only." }
-    }
-    $tarballHash = $null
-    if (Test-Path $tarballHashPath) {
-        $hline = Get-Content $tarballHashPath | Where-Object { $_ -match "^[0-9a-fA-F]{64}" } | Select-Object -First 1
-        if ($hline -match "^([0-9a-fA-F]{64})") { $tarballHash = $matches[1].ToLower() }
-    }
+    $tarball = Join-Path $dlDir $tarballName
+
     function Test-Tarball($path) {
         if (-not (Test-Path $path)) { return $false }
         if ((Get-Item $path).Length -ne $tarballSize) {
-            Write-Host "Collated tarball has wrong size; will rebuild it from chunks."
+            Write-Log "Collated tarball wrong size ($((Get-Item $path).Length)/$tarballSize); will rebuild from chunks."
             return $false
         }
         if ($tarballHash) {
-            Write-Host "Verifying collated tarball SHA256 (10.7 GB, one moment)..."
+            Write-Log "Verifying collated tarball SHA256 (10.7 GB, one moment)..."
             $actual = (Get-FileHash -Path $path -Algorithm SHA256).Hash.ToLower()
             if ($actual -ne $tarballHash) {
-                Write-Host "Collated tarball FAILED the hash check; will rebuild it from chunks."
+                Write-Log "Collated tarball FAILED hash check; will rebuild from chunks."
                 return $false
             }
-            Write-Host "Collated tarball hash OK."
-        } else {
-            Write-Host "Collated tarball size OK."
-        }
+            Write-Log "Collated tarball hash OK."
+        } else { Write-Log "Collated tarball size OK (no hash in manifest)." }
         return $true
     }
+
     if (-not (Test-Tarball $tarball)) {
-        if (Test-Path $tarball) { Remove-Item $tarball -Force }
-        $baseUrl = "https://github.com/cosbykit-afk/lampy-installer/releases/download/$ReleaseTag"
+        if (Test-Path $tarball) { Write-Log "Removing invalid tarball."; Remove-Item $tarball -Force }
+
+        # ---- Inventory (REQ-I1..I3). Fresh measurement per file; a truncated
+        # chunk can never read as complete.
         $i = 0
-        foreach ($chunkName in $chunkNames) {
+        $needDownload = @()
+        foreach ($c in $chunks) {
             $i++
-            $dest = Join-Path $dlDir $chunkName
-            $expected = $chunkSizes[$chunkName]
-            Write-Host "Chunk $i/$($chunkNames.Count): $chunkName"
-            $r = Get-ChunkWithRetry "$baseUrl/$chunkName" $dest $expected
-            if ($r -eq "already-complete") { Write-Host "  already present, skipping." }
+            $dest = Join-Path $dlDir $c.name
+            $have = 0
+            if (Test-Path $dest) { $have = (Get-Item $dest).Length }
+            $want = [long]$c.size
+            if ($have -eq $want) {
+                Write-Log "Chunk $i/$($chunks.Count): $($c.name) already complete, skipping ($have bytes)."
+            } elseif ($have -gt 0) {
+                Write-Log "Chunk $i/$($chunks.Count): $($c.name) partial: have $have of $want bytes - will resume."
+                $needDownload += $c
+            } else {
+                Write-Log "Chunk $i/$($chunks.Count): $($c.name) missing - will download ($want bytes)."
+                $needDownload += $c
+            }
         }
-        # Verify: size always, SHA256 when the manifest is available.
-        # Bad chunks are deleted and re-downloaded once; a second failure aborts.
+
+        # ---- Download (REQ-D1..D4): Range resume + 3 attempts per chunk.
+        $i = 0
+        foreach ($c in $needDownload) {
+            $i++
+            Write-Log "Downloading chunk $i/$($needDownload.Count): $($c.name)"
+            Get-ChunkWithRetry "$baseUrl/$($c.name)" (Join-Path $dlDir $c.name) ([long]$c.size) | Out-Null
+        }
+
+        # ---- Verification (REQ-V1..V4). Bad chunks are deleted and fetched
+        # once more; a second failure aborts. Good chunks are NEVER deleted.
         $attempt = 0
         do {
             $attempt++
             $bad = @()
-            foreach ($chunkName in $chunkNames) {
-                $dest = Join-Path $dlDir $chunkName
-                $expected = $chunkSizes[$chunkName]
-                $ok = (Test-Path $dest) -and ((Get-Item $dest).Length -eq $expected)
-                if ($ok -and $hashes.ContainsKey($chunkName)) {
+            foreach ($c in $chunks) {
+                $dest = Join-Path $dlDir $c.name
+                $want = [long]$c.size
+                $ok = (Test-Path $dest) -and ((Get-Item $dest).Length -eq $want)
+                if ($ok -and $c.sha256) {
                     $actual = (Get-FileHash -Path $dest -Algorithm SHA256).Hash.ToLower()
-                    if ($actual -ne $hashes[$chunkName]) {
-                        Write-Host "  $chunkName FAILED hash check; will re-download."
+                    if ($actual -ne $c.sha256) {
+                        Write-Log "  $($c.name) FAILED hash check (expected $($c.sha256), got $actual); will re-download."
                         $ok = $false
                     }
-                } elseif ($ok) {
-                    Write-Host "  $chunkName size OK."
-                }
-                if (-not $ok) { $bad += $chunkName }
+                } elseif ($ok) { Write-Log "  $($c.name) size OK ($want bytes)." }
+                if (-not $ok) { $bad += $c }
             }
-            foreach ($chunkName in $bad) {
-                $dest = Join-Path $dlDir $chunkName
-                Write-Host "Re-downloading $chunkName ..."
+            foreach ($c in $bad) {
+                $dest = Join-Path $dlDir $c.name
+                Write-Log "Re-downloading $($c.name) ..."
                 Remove-Item $dest -Force -ErrorAction SilentlyContinue
-                Get-ChunkWithRetry "$baseUrl/$chunkName" $dest $chunkSizes[$chunkName] | Out-Null
+                Get-ChunkWithRetry "$baseUrl/$($c.name)" $dest ([long]$c.size) | Out-Null
             }
         } while ($bad.Count -gt 0 -and $attempt -lt 2)
-        if ($bad.Count -gt 0) { throw "Chunk verification failed after re-download: $($bad -join ', ')" }
-        Write-Host "All $($chunkNames.Count) chunks verified."
-        Write-Host "Reassembling tarball..."
+        if ($bad.Count -gt 0) { throw "Chunk verification failed after re-download: $(($bad | ForEach-Object { $_.name }) -join ', ')" }
+        Write-Log "All $($chunks.Count) chunks verified."
+
+        Write-Log "Reassembling tarball..."
         $outStream = [System.IO.File]::Create($tarball)
         try {
-            foreach ($chunkName in $chunkNames) {
-                $inStream = [System.IO.File]::OpenRead((Join-Path $dlDir $chunkName))
+            foreach ($c in $chunks) {
+                $inStream = [System.IO.File]::OpenRead((Join-Path $dlDir $c.name))
                 try { $inStream.CopyTo($outStream) } finally { $inStream.Close() }
             }
         } finally { $outStream.Close() }
-        Write-Host "Tarball reassembled: $tarball"
+        Write-Log "Tarball reassembled: $tarball"
         if (-not (Test-Tarball $tarball)) { throw "Reassembled tarball failed validation." }
     } else {
-        Write-Host "Tarball already downloaded and verified: $tarball"
+        Write-Log "Tarball already downloaded and verified: $tarball"
     }
 }
 if (-not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
