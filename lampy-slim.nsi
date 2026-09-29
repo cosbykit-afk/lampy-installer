@@ -4,7 +4,8 @@
 ;   - NSIS NEVER downloads. install.ps1 owns manifest discovery, chunk
 ;     inventory, resumable download, verification, reassembly, WSL import.
 ;   - The download folder is %LOCALAPPDATA%\Lampy\download and NEVER moves.
-;   - install.ps1 runs in a VISIBLE console so the user watches real progress.
+;   - install.ps1 output is captured into this window via nsExec (no separate
+;     console); the user watches real progress in the installer details pane.
 ;   - Every run appends to install.log in the download folder.
 ;
 ; Build (Linux): sed 's|\${OUTDIR}\\|\${OUTDIR}/|g' lampy-slim.nsi > /tmp/b/lampy-slim.nsi
@@ -17,7 +18,7 @@
 !include "WinMessages.nsh"
 
 !define PRODUCT_NAME "Lampy"
-!define PRODUCT_VERSION "1.1.6"
+!define PRODUCT_VERSION "1.1.10"
 
 Name "${PRODUCT_NAME} ${PRODUCT_VERSION}"
 OutFile "${OUTDIR}\Lampy-Setup.exe"
@@ -80,16 +81,18 @@ Section "Install"
   DetailPrint "Download folder: ${DOWNLOAD_DIR}"
   CreateDirectory "${DOWNLOAD_DIR}"
 
-  ; Hand off to install.ps1 in a VISIBLE console window: the user watches
-  ; honest per-chunk progress there. NSIS just waits for the exit code.
-  DetailPrint "Launching setup (watch the PowerShell window for progress)..."
-  ExecWait 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\install.ps1" -InstallDir "$INSTDIR" -DownloadDir "${DOWNLOAD_DIR}" -InstallMode "$4" -FallbackManifest "$INSTDIR\manifest.json"' $0
+  ; Hand off to install.ps1: output stays INSIDE this installer window via
+  ; nsExec (no separate console). The user watches honest per-chunk progress
+  ; here. NSIS waits for the exit code.
+  DetailPrint "Launching setup (progress appears below)..."
+  nsExec::ExecToLog 'powershell -NoProfile -ExecutionPolicy Bypass -File "$INSTDIR\install.ps1" -InstallDir "$INSTDIR" -DownloadDir "${DOWNLOAD_DIR}" -InstallMode "$4" -FallbackManifest "$INSTDIR\manifest.json"'
+  Pop $0
 
   ; Disable Cancel again when done
   EnableWindow $0 0
 
   ${If} $0 != "0"
-    MessageBox MB_ICONSTOP "Lampy installation failed (exit $0).$\n$\nSee the install window output and ${DOWNLOAD_DIR}\install.log for details."
+    MessageBox MB_ICONSTOP "Lampy installation failed (exit $0).$\n$\nSee the details above and ${DOWNLOAD_DIR}\install.log for details."
     Abort
   ${EndIf}
 
