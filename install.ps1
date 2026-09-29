@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Lampy installer logic. Bundled into Lampy-Setup.exe, runs on the target machine.
 .DESCRIPTION
@@ -27,12 +27,12 @@ $ErrorActionPreference = "Continue"
 # write to stderr, which PowerShell would otherwise treat as terminating.
 # Real failures are caught via explicit throw and $LASTEXITCODE checks below.
 
-function Write-Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
+function Write-Step($msg) { Write-Output "`n=== $msg ===" }
 
 $script:LogPath = $null
 function Write-Log($msg) {
     $line = "$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') $msg"
-    Write-Host $line
+    Write-Output $line
     if ($script:LogPath) { Add-Content -Path $script:LogPath -Value $line -ErrorAction SilentlyContinue }
 }
 
@@ -59,7 +59,7 @@ catch { try { $hypervisor = (Get-WmiObject Win32_ComputerSystem -ErrorAction Sto
 if (($virtFw -eq $false) -and ($hypervisor -ne $true)) {
     throw "This PC can't run WSL2: virtualization is unavailable. Enable VT-x/AMD-V in the firmware settings, then re-run."
 }
-Write-Host "Pre-flight OK: Windows 11 (build $($osv.Build)), virtualization available."
+Write-Output "Pre-flight OK: Windows 11 (build $($osv.Build)), virtualization available."
 
 # Locate the tarball: explicit path, local file, or download from GitHub Releases
 $tarball = $TarballPath
@@ -67,7 +67,7 @@ if (-not $tarball) {
     $localTar = Join-Path $PSScriptRoot "lampy-public.tar"
     if (Test-Path $localTar) {
         $tarball = $localTar
-        Write-Host "Using local tarball: $tarball"
+        Write-Output "Using local tarball: $tarball"
     }
 }
 
@@ -157,6 +157,12 @@ function Get-ChunkWithRetry($url, $dest, $expectedSize) {
 # Manifest-driven download (Installer_Requirements.md section 3).
 # install.ps1 is the ONLY downloader. Every run appends to install.log.
 # ---------------------------------------------------------------------------
+# Repair mode with an existing distro needs no tarball — skip the download.
+$repairSkipDownload = ($InstallMode -eq "repair") -and (wsl --list --quiet 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ -eq $DistroName })
+if ($repairSkipDownload) {
+    Write-Output "Repair mode: distro '$DistroName' exists; skipping image download."
+    $tarball = "SKIP"
+}
 if (-not $tarball) {
     Write-Step "Downloading Lampy system image"
     if ([string]::IsNullOrEmpty($DownloadDir)) { $dlDir = Join-Path $InstallDir "download" } else { $dlDir = $DownloadDir }
@@ -322,7 +328,7 @@ if (-not $tarball) {
         Write-Log "Tarball already downloaded and verified: $tarball"
     }
 }
-if (-not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
+if ($tarball -ne "SKIP" -and -not (Test-Path $tarball)) { throw "Tarball not found: $tarball" }
 
 Write-Step "1/5 Ensuring WSL2 is available"
 $wslOk = $false
@@ -336,10 +342,10 @@ if (-not $wslOk) {
     if (-not $isAdmin) {
         throw "WSL is not installed. Re-run this installer once AS ADMINISTRATOR to enable WSL, then re-run it normally."
     }
-    Write-Host "Enabling WSL..."
+    Write-Output "Enabling WSL..."
     dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart | Out-Null
     dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart | Out-Null
-    Write-Host "WSL enabled. A reboot is required, then re-run the installer."
+    Write-Output "WSL enabled. A reboot is required, then re-run the installer."
     exit 2
 }
 wsl --set-default-version 2 | Out-Null
@@ -350,7 +356,7 @@ New-Item -ItemType Directory -Force -Path $wslDir | Out-Null
 # WSL distros are per-user (HKCU). Run as the user, NOT admin.
 $existing = wsl --list --quiet 2>$null | ForEach-Object { $_.Trim() } | Where-Object { $_ -eq $DistroName }
 if ($InstallMode -eq "repair" -and $existing) {
-    Write-Host "Repair mode: distro '$DistroName' already registered -- skipping import, re-running configuration."
+    Write-Output "Repair mode: distro '$DistroName' already registered -- skipping import, re-running configuration."
 } else {
     if ($existing) {
         # NEVER silently destroy an existing distro (v1.1.2 did this and wiped
@@ -358,7 +364,7 @@ if ($InstallMode -eq "repair" -and $existing) {
         Write-Warning "A WSL distro named '$DistroName' is already registered."
         $ans = Read-Host "Unregister it and import fresh? ALL DATA inside it will be DELETED. Type YES (all caps) to confirm"
         if ($ans -cne "YES") { throw "Installation cancelled; existing distro left untouched." }
-        Write-Host "Unregistering '$DistroName'..."
+        Write-Output "Unregistering '$DistroName'..."
         wsl --unregister $DistroName
         if ($LASTEXITCODE -ne 0) { throw "wsl --unregister failed" }
     }
@@ -368,13 +374,28 @@ if ($InstallMode -eq "repair" -and $existing) {
 
 Write-Step "3/5 Configuring services inside WSL"
 # The image ships /etc/supervisor/conf.d/lampy.conf with all 7 services, but it
-# is Docker-specific. Apply WSL adaptations:
-wsl -d $DistroName -u root bash -c "mkdir -p /var/run/supervisor /var/log/supervisor /var/run/postgresql; chown postgres:postgres /var/run/postgresql; chmod 2775 /var/run/postgresql; ln -sf /usr/lib/postgresql/16/bin/postgres /usr/local/bin/postgres; ln -sf /usr/lib/postgresql/16/bin/pg_ctl /usr/local/bin/pg_ctl; ln -sf /usr/lib/postgresql/16/bin/initdb /usr/local/bin/initdb"
+# is Docker-specific. WSL adaptations (dirs, symlinks, supervisor config,
+# boot file) are applied by wsl-envfix.py below, version-gated on the boot
+# file. The boot script itself recreates the tmpfs dirs on every WSL start.
 
 # Fix postgres program environment: needs both PATH and PGDATA for WSL
 # (wsl-envfix.py ships alongside this script; piped to python3 via stdin)
-Get-Content -Path (Join-Path $PSScriptRoot "wsl-envfix.py") -Raw | wsl -d $DistroName -u root python3
-if ($LASTEXITCODE -ne 0) { throw "wsl-envfix.py failed" }
+# Check if the boot file exists and is current. If outdated, re-run
+# wsl-envfix.py to update it (and all other WSL adaptations).
+$envfixPath = Join-Path $PSScriptRoot "wsl-envfix.py"
+$envfixContent = Get-Content -Path $envfixPath -Raw
+$requiredBootVersion = [regex]::Match($envfixContent, 'BOOT_VERSION\s*=\s*(\d+)').Groups[1].Value
+$existingBootVersion = wsl -d $DistroName -u root -- bash -c "grep -o 'LAMPY_BOOT_VERSION=[0-9]*' /usr/local/bin/lampy-boot.sh 2>/dev/null | cut -d= -f2 || echo 0" 2>$null
+if (-not $existingBootVersion) { $existingBootVersion = "0" }
+$existingBootVersion = $existingBootVersion.Trim()
+if ([int]$existingBootVersion -lt [int]$requiredBootVersion) {
+    Write-Output "Boot file v$existingBootVersion is outdated (need v$requiredBootVersion); updating WSL configuration..."
+    $envfixContent | wsl -d $DistroName -u root python3
+    if ($LASTEXITCODE -ne 0) { throw "wsl-envfix.py failed" }
+    Write-Output "WSL configuration updated (boot file v$requiredBootVersion)."
+} else {
+    Write-Output "Boot file is current (v$existingBootVersion); skipping WSL reconfiguration."
+}
 
 # REQ-PW: install-time passwords. No image default survives. Prompts use
 # secure (non-echoed) input; passwords live in memory only and are NEVER
@@ -401,7 +422,7 @@ function Read-LayerPassword($label, $emptyMeans) {
         if ([string]::IsNullOrEmpty($pa)) { return "" }
         $pb = Unprotect-SecureString (Read-Host -AsSecureString "Confirm password for $label")
         if ($pa -ceq $pb) { return $pa }
-        Write-Host "Passwords did not match; try again."
+        Write-Output "Passwords did not match; try again."
     }
 }
 
@@ -435,10 +456,10 @@ if ($script:needPasswords) {
     $pyScript = (Get-Content -Path (Join-Path $PSScriptRoot "set-passwords.py") -Raw).Replace('__CONFIG_B64__', $pwB64)
     $pyScript | wsl -d $DistroName -u root python3
     if ($LASTEXITCODE -ne 0) { throw "set-passwords.py failed" }
-    Write-Host "Passwords written to service configuration (not logged)."
+    Write-Output "Passwords written to service configuration (not logged)."
 
-    if ($showPg) { Write-Host "Generated PostgreSQL password (save it now): $pgPw" -ForegroundColor Yellow }
-    if ($showForum) { Write-Host "Generated forum DB password (save it now): $forumDbPw" -ForegroundColor Yellow }
+    if ($showPg) { Write-Output "Generated PostgreSQL password (save it now): $pgPw" }
+    if ($showForum) { Write-Output "Generated forum DB password (save it now): $forumDbPw" }
     $codePw = $null; $secretKey = $null; $pwJson = $null; $pwB64 = $null; $pyScript = $null
 }
 
@@ -446,7 +467,7 @@ if ($script:needPasswords) {
 
 Write-Step "4/5 Registering boot startup (Task Scheduler)"
 $taskName = "Lampy"
-$action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d $DistroName -u root /usr/local/bin/lampy-boot.sh"
+$action = New-ScheduledTaskAction -Execute "wsl.exe" -Argument "-d $DistroName -u root /usr/local/bin/lampy-boot.sh keepalive"
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
 Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 if ($isAdmin) {
@@ -460,8 +481,8 @@ if ($isAdmin) {
     $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 }
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
-    -Principal $principal -Settings $settings | Out-Null
-Write-Host "Scheduled task '$taskName' registered."
+    -Principal $principal -Settings $settings -Force | Out-Null
+Write-Output "Scheduled task '$taskName' registered."
 
 Write-Step "5/5 Starting Lampy and verifying"
 # REQ-R1: Ensure supervisord is running with the current config. Shut down
@@ -472,7 +493,7 @@ Write-Step "5/5 Starting Lampy and verifying"
 wsl -d $DistroName -u root -- supervisorctl -c /etc/supervisor/conf.d/lampy.conf shutdown 2>$null | Out-Null
 Start-Sleep -Seconds 10
 wsl -d $DistroName -u root /usr/local/bin/lampy-boot.sh
-Write-Host "Waiting for services to boot..."
+Write-Output "Waiting for services to boot..."
 Start-Sleep -Seconds 60
 
 if ($script:needPasswords -and $script:pgPw) {
@@ -483,7 +504,7 @@ if ($script:needPasswords -and $script:pgPw) {
            "ALTER ROLE forum PASSWORD '" + ($script:forumDbPw -replace "'", "''") + "';"
     $sql | wsl -d $DistroName -u postgres psql -v ON_ERROR_STOP=1 2>&1 | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Failed to set PostgreSQL role passwords" }
-    Write-Host "PostgreSQL role passwords updated."
+    Write-Output "PostgreSQL role passwords updated."
     $script:pgPw = $null; $script:forumDbPw = $null
 }
 
@@ -496,31 +517,41 @@ $checks = @(
 if ($script:codeServerEnabled) {
     $checks += @{ Name = "code-server"; WslUrl = "http://localhost:8080/" }
 } else {
-    Write-Host "  code-server: DISABLED (no password set; IDE stays off by design)"
+    Write-Output "  code-server: DISABLED (no password set; IDE stays off by design)"
 }
 $failed = 0
 foreach ($c in $checks) {
-    if ($c.Cmd) {
-        Invoke-Expression $c.Cmd | Out-Null
-        $ok = $LASTEXITCODE -eq 0
-    } else {
-        # REQ-V1: Verify from INSIDE WSL, not from Windows. Windows->WSL
-        # localhost forwarding is unreliable (verified broken on Toetop
-        # 2026-09-28); services bind to localhost inside the distro, so
-        # curl there is the ground truth. Never use Invoke-WebRequest
-        # http://localhost/ from Windows for WSL services.
-        $code = wsl -d $DistroName -- curl -s -o /dev/null -w '%{http_code}' $c.WslUrl --max-time 10 2>$null
-        $ok = $code -eq "200"
+    # Retry up to 3 times with 15s delays. Services may need time to become
+    # ready after (re)start; a single immediate check produces false negatives.
+    $ok = $false
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if ($c.Cmd) {
+            Invoke-Expression $c.Cmd | Out-Null
+            $ok = $LASTEXITCODE -eq 0
+        } else {
+            # REQ-V1: Verify from INSIDE WSL, not from Windows. Windows->WSL
+            # localhost forwarding is unreliable (verified broken on Toetop
+            # 2026-09-28); services bind to localhost inside the distro, so
+            # curl there is the ground truth. Never use Invoke-WebRequest
+            # http://localhost/ from Windows for WSL services.
+            $code = wsl -d $DistroName -- curl -s -o /dev/null -w '%{http_code}' $c.WslUrl --max-time 10 2>$null
+            $ok = $code -eq "200"
+        }
+        if ($ok) { break }
+        if ($attempt -lt 3) {
+            Write-Output ("  {0}: attempt {1} failed, retrying in 15s..." -f $c.Name, $attempt)
+            Start-Sleep -Seconds 15
+        }
     }
     if ($ok) { $status = "OK" } else { $status = "FAILED"; $failed++ }
-    Write-Host ("  {0}: {1}" -f $c.Name, $status)
+    Write-Output ("  {0}: {1}" -f $c.Name, $status)
 }
 
 if ($failed -gt 0) {
     Write-Warning "$failed service check(s) failed. See output above."
     exit 1
 }
-Write-Host "`nLampy installed and running." -ForegroundColor Green
-Write-Host "Forum:       http://localhost/app/"
-Write-Host "R Theory:    http://localhost/r-theory/"
-Write-Host "code-server: http://localhost:8080/"
+Write-Output "`nLampy installed and running."
+Write-Output "Forum:       http://localhost/app/"
+Write-Output "R Theory:    http://localhost/r-theory/"
+Write-Output "code-server: http://localhost:8080/"
