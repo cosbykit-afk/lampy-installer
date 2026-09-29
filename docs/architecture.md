@@ -1,24 +1,40 @@
 Living document — update these diagrams when adding features.
 # lampy-installer — Architecture
 
-Windows installer for the Lampy WSL stack. The repo holds the PowerShell install/uninstall scripts, NSIS wrapper definitions, the chunk manifest, and build-time helpers. It has no runtime application of its own: install.ps1 is the product, and it performs a one-shot install of the Lampy system image as a WSL2 distro, then configures it and registers a Windows boot task.
+Windows installer for the Lampy WSL stack. The repo holds the PowerShell install/uninstall scripts, the NSIS wrapper definitions, the chunk manifest, and build-time helpers. It has no runtime application of its own: `install.ps1` is the product, and it performs a one-shot install of the Lampy system image as a WSL2 distro named `lampy`, then configures it and registers a Windows boot task.
+
+The install is **per-user**: no elevation is required. Elevation matters only for the one-time WSL feature enablement (if WSL is missing, the script throws and tells the user to re-run once as administrator, enable WSL, reboot, and re-run normally). When run elevated, the boot task is registered at-startup as SYSTEM (previous behavior); the normal per-user path registers an at-logon task as the installing user. WSL distros are per-user (registered under HKCU), so an elevated SYSTEM task would not see the user's distro.
 
 ## 1. Context diagram (level 0)
 
 ```mermaid
 flowchart
     E1["End user on Windows"]
-    E2["GitHub Releases"]
-    E3["GitHub website repos"]
-    E4["Windows OS"]
-    S("0 Lampy installer")
-    E1 -->|"runs installer as administrator"| S
-    S -->|"progress and install log"| E1
-    S -->|"download manifest and 7 chunks"| E2
-    E2 -->|"manifest and chunks"| S
-    E3 -->|"latest R Theory and Bible websites"| S
-    S -->|"import distro and register boot task"| E4
-    E4 -->|"installed distro and boot startup"| S
+    E2["GitHub (Releases, API, raw content)"]
+    E3["Windows OS (WSL, Task Scheduler)"]
+
+    subgraph SYS["Lampy installer — system boundary"]
+        S("0 Lampy installer")
+    end
+
+    E1 -->|"install parameters (InstallDir, DistroName, TarballPath, InstallMode)"| S
+    S -->|"progress output, install.log, and generated passwords (shown once)"| E1
+    E1 -->|"uninstall request with YES confirmation"| S
+    S -->|"uninstall progress"| E1
+    S -->|"latest-release tag query (public API)"| E2
+    E2 -->|"latest installer release tag"| S
+    S -->|"manifest.json fetch (network, cache, or bundled fallback)"| E2
+    E2 -->|"manifest with 7 chunk descriptors and tarball SHA256"| S
+    S -->|"chunk download requests (HTTP Range resume, 3 retries)"| E2
+    E2 -->|"7 image chunks"| S
+    S -->|"distro import / unregister requests"| E3
+    E3 -->|"distro registration state"| S
+    S -->|"WSL feature-enablement request (dism, admin only)"| E3
+    E3 -->|"WSL availability"| S
+    S -->|"boot-task registration / removal request"| E3
+    E3 -->|"task registration state"| S
+    S -->|"boot-script start request and service-probe commands"| E3
+    E3 -->|"service probe results"| S
 ```
 
 ## 2. Level-1 data flow diagram
@@ -26,71 +42,116 @@ flowchart
 ```mermaid
 flowchart
     E1["End user on Windows"]
-    E2["GitHub Releases"]
-    E3["GitHub website repos"]
-    P1("1.0 Download image chunks")
-    P2("2.0 Verify checksums and reassemble tarball")
-    P3("3.0 Import lampy WSL distro")
-    P4("4.0 Configure services inside WSL")
-    P5("5.0 Register boot task and start Lampy")
-    P6("6.0 Uninstall Lampy")
+    E2["GitHub (Releases, API, raw content)"]
+    E3["Windows OS (WSL, Task Scheduler)"]
+    P1("1.0 Check pre-flight requirements")
+    P2("2.0 Fetch chunk manifest")
+    P3("3.0 Download, verify, and reassemble image")
+    P4("4.0 Import lampy WSL distro")
+    P5("5.0 Configure services inside WSL")
+    P6("6.0 Register boot task")
+    P7("7.0 Start and verify services")
+    P8("8.0 Uninstall Lampy")
     D1[("D1 Download cache")]
-    D2[("D2 lampy WSL distro disk")]
-    D3[("D3 Lampy scheduled task")]
-    E1 -->|"runs install.ps1 as administrator"| P1
-    P1 -->|"fetch manifest"| E2
-    E2 -->|"manifest and chunk list"| P1
-    P1 -->|"save chunk"| D1
-    D1 -->|"resume check of partial chunks"| P1
-    D1 -->|"chunks and manifest"| P2
-    P2 -->|"verified tarball"| P3
-    P2 -->|"install log entries"| D1
-    P3 -->|"import tarball as distro"| D2
-    P3 -->|"new distro"| P4
-    E3 -->|"latest website files"| P4
-    P4 -->|"configured distro"| D2
-    P4 -->|"registered services"| P5
-    P5 -->|"Lampy boot task"| D3
-    P5 -->|"start services"| D2
-    P5 -->|"ready URLs"| E1
-    E1 -->|"runs uninstall.ps1"| P6
-    P6 -->|"stop and unregister task"| D3
-    P6 -->|"unregister distro"| D2
-    P6 -->|"remove install dir"| D1
+    D2[("D2 Lampy WSL distro")]
+    E1 -->|"install request with parameters"| P1
+    P1 -->|"WSL availability probe"| E3
+    E3 -->|"WSL availability"| P1
+    P1 -->|"fatal error message"| E1
+    P1 -->|"WSL enablement command (dism)"| E3
+    P1 -->|"pre-flight OK with parameters and skip flags"| P2
+    P2 -->|"release tag and manifest requests"| E2
+    E2 -->|"release tag and manifest.json"| P2
+    P2 -->|"manifest copy"| D1
+    P2 -->|"chunk descriptors or SKIP"| P3
+    P3 -->|"chunk download requests (HTTP Range resume)"| E2
+    E2 -->|"chunk bytes"| P3
+    D1 -->|"partial chunk lengths (resume inventory)"| P3
+    P3 -->|"chunk files"| D1
+    P3 -->|"reassembled tarball"| D1
+    P3 -->|"install.log entries"| D1
+    P3 -->|"verified tarball or SKIP"| P4
+    P4 -->|"distro list query"| E3
+    E3 -->|"distro registration state"| P4
+    P4 -->|"data-deletion warning"| E1
+    E1 -->|"YES confirmation"| P4
+    P4 -->|"wsl --import and wsl --unregister commands"| E3
+    P4 -->|"imported distro"| D2
+    P4 -->|"imported or existing distro"| P5
+    P5 -->|"boot-file version check"| D2
+    D2 -->|"existing boot-file version"| P5
+    P5 -->|"wsl-envfix.py invocation"| D2
+    P5 -->|"password prompts"| E1
+    E1 -->|"typed passwords"| P5
+    P5 -->|"generated passwords (shown once)"| E1
+    P5 -->|"supervisor config updates and ALTER ROLE"| D2
+    P5 -->|"configured distro"| P6
+    P6 -->|"task registration commands"| E3
+    E3 -->|"task registration state"| P6
+    P6 -->|"task registration notice"| E1
+    P6 -->|"boot task and distro handle"| P7
+    P7 -->|"lampy-boot.sh start"| D2
+    P7 -->|"probe commands (pg_isready, curl)"| D2
+    D2 -->|"probe results"| P7
+    P7 -->|"ready URLs"| E1
+    P7 -->|"service-check failure (exit 1)"| E1
+    E1 -->|"uninstall request"| P8
+    P8 -->|"uninstall warning"| E1
+    E1 -->|"YES confirmation"| P8
+    P8 -->|"task command-line check"| E3
+    E3 -->|"task command line"| P8
+    P8 -->|"stop and unregister task (only if -d DistroName matches)"| E3
+    P8 -->|"wsl --unregister command"| E3
+    P8 -->|"install directory removal"| D1
+    P8 -->|"uninstall progress"| E1
 ```
 
 ## 3. Entity–relationship diagram
 
-The repo has no persistent application data model and no database. All state lives as files on the Windows machine: the download cache, the WSL virtual disk, and the scheduled task. The only structured data definition in the repo is the chunk manifest, which is a download descriptor rather than a managed data model.
+No persistent application data model was observed: the repo has no schema, migration, model file, or config table — only scripts, manifests, and NSIS definitions. The only structured data definition in the repo is the chunk manifest, a download descriptor. This ERD describes that file's structure, not a managed data model. Runtime state (the WSL virtual disk, the scheduled task) lives in Windows/WSL, outside the repo.
 
 ```mermaid
 erDiagram
     MANIFEST {
         string base_url
-        string data_release
+        string data_release PK
     }
     CHUNK {
         string name PK
+        string manifest_release FK
         string sha256
         int size
     }
-    INSTALL_LOG {
-        datetime timestamp
-        string step
-        string message
+    TARBALL {
+        string name PK
+        string manifest_release FK
+        string sha256
+        int size
     }
     MANIFEST ||--o{ CHUNK : lists
-    CHUNK ||--o{ INSTALL_LOG : "verified by"
+    MANIFEST ||--|| TARBALL : describes
 ```
 
 ## Grounding notes
 
-- Observed: README.md describes install.ps1 doing five numbered steps — download the 11 GB image in 7 chunks from GitHub Releases, enable WSL2, import the lampy distro, fetch the latest R Theory and Bible websites from GitHub, start all 8 services, register boot startup; plus C:\Lampy layout, the port list, password-change steps, and the -TarballPath flag for a local tarball.
-- Observed: install.ps1 is 526 lines with Write-Step lines matching those phases; uninstall.ps1 stops and unregisters the Lampy scheduled task, runs wsl --unregister lampy, and deletes C:\Lampy; manifest.json lists base_url plus 7 named chunks each with sha256 and size and the tarball sha256; lampy-slim.nsi wraps the scripts into Lampy-Setup.exe with %LOCALAPPDATA%\Lampy\download as the permanent download folder and states NSIS never downloads — install.ps1 owns chunk inventory, resumable download, verification, and reassembly; verify-bundle.py asserts the NSIS File list matches the files the scripts reference.
-- Observed: the repo has no schema, migration, model file, or config table — only scripts, manifests, and NSIS definitions.
-- INFERRED: the flow labels "resume check of partial chunks" and "ready URLs" summarize behavior described in the README and NSIS comments but are not literal names from the repo.
-- INFERRED: relationship to lampy-admin — lampy-admin runs inside the distro this installer creates (its README says it deploys as supervisord program "console" inside the lampy distro), but nothing in this repo names or bundles the console, so whether it is baked into the pre-built system image or added later is not observable here.
+- OBSERVED (install.ps1, repo main HEAD `237e12d` v1.1.10): runs per-user with no elevation (line 11: "Runs per-user (no elevation needed)"); elevation is only for the one-time WSL feature enablement. Pre-flight fails fast on OS floor (Windows 11 = Major 10 build 22000+, floor not exact match) and on missing virtualization (VT-x/AMD-V or hypervisor); if WSL is missing and the user is not admin it throws asking for one admin re-run, else it enables WSL via dism and exits 2 (reboot, re-run).
+- OBSERVED (install.ps1): repair mode (`-InstallMode repair`) with the distro already registered sets `$tarball = "SKIP"` and skips the image download entirely (Kit-verified test G009); fresh mode (`G007`) starts the download; import skips when the distro is registered in repair mode, and a fresh install over an existing distro asks `YES (all caps)` before `wsl --unregister` — it never silently destroys a distro (the v1.1.2 wipe is named in a comment as the bug this guards).
+- OBSERVED (install.ps1): manifest discovery tries, in order, the public GitHub releases API for the latest tag, `raw.githubusercontent.com/<tag>/manifest.json`, the cached `<DownloadDir>/manifest.json`, then the `-FallbackManifest` bundle; aborts when all fail.
+- OBSERVED (install.ps1): chunk download uses `System.Net.HttpWebRequest` with `AddRange` resume (deliberately not HttpClient — v1.1.1 comment: some machines cannot load that assembly), 3 attempts per chunk, 10 s between retries, progress every 15 s; a legacy `C:\Lampy\download` one-time migration shim moves matching chunks to the new download dir.
+- OBSERVED (install.ps1): verification checks every chunk's byte size, then SHA256; a bad chunk is deleted and re-downloaded once, and a second failure aborts ("Good chunks are NEVER deleted"); the tarball is reassembled by concatenating chunks in manifest order and re-validated by size and SHA256 before use.
+- OBSERVED (install.ps1): step 3 runs `wsl-envfix.py` (piped to `python3` inside the distro) only when the distro's `LAMPY_BOOT_VERSION` is below the script's `BOOT_VERSION`; passwords are collected with `Read-Host -AsSecureString` (postgres, forum, code-server; empty = generate random unambiguous or disable code-server), applied via `set-passwords.py` over stdin as base64 JSON (never logged or on a command line), and synced to PostgreSQL roles with `ALTER ROLE` via stdin psql; generated passwords are printed once.
+- OBSERVED (install.ps1): step 4 registers the scheduled task `Lampy` running `wsl.exe -d <DistroName> -u root /usr/local/bin/lampy-boot.sh keepalive`, with `-Force` on re-register (fix for step-4 re-run failure); elevated runs register at-startup as SYSTEM, per-user runs register at-logon as the installing user.
+- OBSERVED (install.ps1): step 5 shuts down any old supervisord, runs `lampy-boot.sh`, waits 60 s, then probes PostgreSQL (`pg_isready`), Apache `/`, forum `/app/`, Ollama `/api/tags`, and code-server `/` (only when enabled) — each up to 3 attempts 15 s apart, verified **from inside WSL** (comment: Windows→WSL localhost forwarding is unreliable, verified broken on Toetop 2026-09-28 — never `Invoke-WebRequest http://localhost/` from Windows); exits 1 when any check fails; prints the ready URLs.
+- OBSERVED (uninstall.ps1): per-user, asks `YES (all caps)` before deleting; removes the scheduled task only when its action's command line matches `-d <DistroName>` (the v1.1.10 task-safety fix — a task for a different distro is left alone; Kit-verified test G011); then `wsl --unregister`, then removes the install dir.
+- OBSERVED (manifest.json): `base_url` `https://github.com/cosbykit-afk/lampy-installer/releases/download/v1.0.0`, `data_release` `v1.0.0`, 7 chunks `lampy-public.tar.part-aa`..`part-ag` (each with `name`, `sha256`, `size`; six are 1,887,436,800 bytes, the last 228,433,920), and `tarball` `{name: lampy-public.tar, sha256: f6f71015…, size: 11553054720}` (11,553,054,720 bytes ≈ 11.6 GB decimal / 10.8 GiB). `lampy-public.tar.full.sha256` carries the same tarball hash.
+- OBSERVED (lampy-slim.nsi): the current wrapper — `PRODUCT_VERSION "1.1.10"`, `RequestExecutionLevel user`, `InstallDir $LOCALAPPDATA\Lampy`, permanent `DOWNLOAD_DIR $LOCALAPPDATA\Lampy\download`; bundles exactly `install.ps1`, `uninstall.ps1`, `manifest.json`, `wsl-envfix.py`, `set-passwords.py`; detects an existing virtual disk and offers Yes=Reinstall / No=Repair / Cancel; runs install.ps1 via `nsExec::ExecToLog` with `-InstallMode`; writes per-user Start Menu shortcuts and an HKCU uninstall registry entry. The older `lampy.nsi` (PRODUCT_VERSION 1.0.0, `RequestExecutionLevel admin`, 30 GB single-file payload) is superseded.
+- OBSERVED (verify-bundle.py): build-time guard that parses install.ps1/uninstall.ps1 for every `Join-Path $PSScriptRoot "<name>"` reference and asserts each file is in the staging dir and the NSIS `File` list — the check that would have caught v1.1.1 shipping without `wsl-envfix.py`.
+- OBSERVED (set-passwords.py): reads JSON from the `__CONFIG_B64__` placeholder (base64, filled by install.ps1 before piping over stdin); writes each password as exactly one `environment=` line in its supervisor program section.
+- OBSERVED (wsl-envfix.py): `BOOT_VERSION = 2`; idempotent WSL adaptations (postgres PATH/PGDATA, supervisor RPC sections, boot script); password-related environment is owned by set-passwords.py, not this script.
+- INFERRED: the DFD groups the scripts' linear numbered phases into 8 processes; the grouping is my synthesis. Install parameters (`InstallDir`, `DistroName`, `TarballPath`, `ReleaseTag`, `DownloadDir`, `InstallMode`, `FallbackManifest`) are the process inputs.
+- INFERRED: the "End user on Windows" runs the NSIS `Lampy-Setup.exe` GUI or the raw scripts; the NSIS choice dialog maps to `-InstallMode fresh|repair|reinstall`.
+- OBSERVED (local git log at 237e12d; GitHub API): v1.1.4 (NSIS window output via nsExec, service-check retries), v1.1.5 (supervisord daemon mode, idempotent boot script), v1.1.6 (quoted-password detector — repair prompts on Toetop), v1.1.7 (NSIS window output, retries), v1.1.8 (boot-file version check in repair), v1.1.9 (remove redundant mkdir), `-Force` on `Register-ScheduledTask` (step-4 re-run fix), and v1.1.10 (`237e12d`): repair skips download, uninstall task-safety. The local commits 3cedb56–237e12d (v1.1.4–v1.1.10) are absent from GitHub main; note GitHub main (`2845fb5d`) is a divergent branch that carries its own v1.1.5/v1.1.6/v1.1.9-labeled commits, so the two mains will not fast-forward. Resolving the code divergence (merge vs force-push) is Kit's decision; this doc describes the local v1.1.10 code.
 
 ## Relationship to the other repo
 
-lampy-installer creates the WSL distro that lampy-admin runs inside of. The installer delivers the full Lampy stack including the forum app the console reads and writes. The lampy-admin repo contains Refresh-WslPortForwards.ps1, a Windows-side script that complements the installer's port setup by refreshing WSL port forwards. The console updates itself from the lampy-admin GitHub releases, independent of any installer release.
+lampy-installer creates the WSL distro that lampy-admin runs inside of. The installer delivers the full Lampy stack including the forum app whose database the console reads and writes. The lampy-admin repo contains `Refresh-WslPortForwards.ps1`, a Windows-side script that complements the installer's port setup by refreshing WSL port forwards; the console's windowstools tab serves that same file and refreshes those forwards over SSH. The console updates itself from the lampy-admin GitHub releases, independent of any installer release.
