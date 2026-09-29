@@ -3,6 +3,10 @@ supervisorctl. Idempotent: safe to re-run (repair mode). Password-related
 environment is owned by set-passwords.py, not this script."""
 import re
 
+# Boot file version. Increment when the boot script template changes.
+# The installer checks this to decide if Repair needs to re-run this script.
+BOOT_VERSION = 2
+
 p = "/etc/supervisor/conf.d/lampy.conf"
 c = open(p).read()
 
@@ -26,6 +30,17 @@ def _each_section(name, fn):
                lambda m: fn(m.group(1)), c, flags=re.S)
 
 
+# Postgres: run the binary directly, not via /docker-entrypoint.sh.
+# The entrypoint wrapper confuses supervisord's PID tracking (it starts
+# postgres, which succeeds, but supervisord thinks it failed and spawns
+# duplicates that fight over postmaster.pid). The data dir is already
+# initialized, so the entrypoint's setup is not needed.
+def _fix_pgcmd(body):
+    body = re.sub(r"command=/docker-entrypoint\.sh postgres",
+                  "command=/usr/lib/postgresql/16/bin/postgres -D /home/postgres/pgdata/data",
+                  body)
+    return body
+_each_section("postgres", _fix_pgcmd)
 def _fix_pgdata(body):
     lines = [l for l in body.split("\n") if not l.startswith("environment=")]
     lines.insert(1, 'environment=PATH="/usr/lib/postgresql/16/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",PGDATA="/home/postgres/pgdata/data"')
@@ -73,8 +88,12 @@ print("wsl.conf written")
 # Boot wrapper: idempotent "ensure supervisord is running". Recreates tmpfs
 # dirs (/var/run is wiped on every WSL boot), then starts supervisord as a
 # DAEMON if it's not already running. Safe to call repeatedly.
+# With argument "keepalive", sleeps forever after ensuring supervisord —
+# this keeps the WSL distro alive (a daemonized supervisord alone does not
+# prevent WSL from shutting down when the last client disconnects).
 with open("/usr/local/bin/lampy-boot.sh", "w") as f:
-    f.write("""#!/bin/bash
+    f.write(f"""#!/bin/bash
+# LAMPY_BOOT_VERSION={BOOT_VERSION}
 # Lampy boot wrapper: recreate tmpfs directories, ensure supervisord daemon.
 mkdir -p /var/run/supervisor /var/log/supervisor /var/run/postgresql
 chown postgres:postgres /var/run/postgresql
@@ -84,10 +103,16 @@ ln -sf /usr/lib/postgresql/16/bin/pg_ctl /usr/local/bin/pg_ctl
 ln -sf /usr/lib/postgresql/16/bin/initdb /usr/local/bin/initdb
 # Already running? Nothing to do.
 if supervisorctl -c /etc/supervisor/conf.d/lampy.conf status >/dev/null 2>&1; then
-    exit 0
+    :
+else
+    # Start as a daemon (nodaemon=false in lampy.conf for WSL).
+    supervisord -c /etc/supervisor/conf.d/lampy.conf
 fi
-# Start as a daemon (nodaemon=false in lampy.conf for WSL).
-supervisord -c /etc/supervisor/conf.d/lampy.conf
+# Keep the distro alive for the scheduled task; the installer omits this
+# argument so its wsl invocation returns instead of hanging.
+if [ "$1" = "keepalive" ]; then
+    exec sleep infinity
+fi
 """)
 import os
 os.chmod("/usr/local/bin/lampy-boot.sh", 0o755)
