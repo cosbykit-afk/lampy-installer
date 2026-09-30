@@ -238,7 +238,7 @@ See [BUILD.md](BUILD.md) for the full pipeline
 
 ## Version
 
-- Installer: 1.1.9
+- Installer: 1.1.10
 - Base image: `kitcosby/lampy-single:windows-1.0.0`
   (digest `sha256:69a301fb52d664e31105972d88b1d2431d923e2bb8474e2c531e08a59e004455`)
 - System image: `lampy-public.tar` (11 GB, 7 chunks, released 2026-09-28)
